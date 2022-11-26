@@ -70,6 +70,20 @@ async def starlightwinner(interaction: discord.Interaction):
     await interaction.followup.send(f'@{winner} has been selected as the winner!')
 
 
+@rhelbot.tree.command(description='Adds a donated item to the item list')
+@app_commands.checks.has_any_role('Waltz Leadership (Flare)', 'Amplifier')
+@app_commands.describe(item='Item donated', member='Person who donated the item')
+async def donate(interaction: discord.Interaction, item: str, member: str):
+    await interaction.response.defer()
+
+    itemfile = open("items.txt", "a")
+    itemfile.write(f'{item},{member}')
+    itemfile.write("\n")
+    itemfile.close()
+
+    await interaction.followup.send(f'Recorded {item} donated by {member}\n')
+
+
 # Starting the bot
 bot_token_file = open("rhelbot_token.txt", "r")
 bot_token = bot_token_file.read()
