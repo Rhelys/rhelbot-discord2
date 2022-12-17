@@ -61,10 +61,11 @@ async def starlightcount(interaction: discord.Interaction):
     description="Selects a winner from the entries in the Starlight giveaway"
 )
 @app_commands.checks.has_any_role("Waltz Leadership (Flare)", "Amplifier")
-async def starlightwinner(interaction: discord.Interaction):
+@app_commands.describe(messageid="Message ID of the contest post")
+async def starlightwinner(interaction: discord.Interaction, messageid: int):
     await interaction.response.defer()
     channel = rhelbot.get_channel(952012406341648454)
-    message = await channel.fetch_message(1045426377991659621)
+    message = await channel.fetch_message(messageid)
     contestants = set()
 
     for reaction in message.reactions:
@@ -81,7 +82,7 @@ async def starlightwinner(interaction: discord.Interaction):
 @app_commands.describe(
     item="Item donated",
     member="Person who donated the item",
-    quantity="(Optional) Number of items donated. Defaults to 1 if not provided"
+    quantity="(Optional) Number of items donated. Defaults to 1 if not provided",
 )
 async def donate(
     interaction: discord.Interaction, quantity: Optional[int], item: str, member: str
