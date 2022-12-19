@@ -75,7 +75,7 @@ async def starlightwinner(interaction: discord.Interaction, messageid: str):
 
     people = list(contestants)
     winner = random.choice(people)
-    await interaction.followup.send(f"@{winner} has been selected as the winner!")
+    await interaction.followup.send(f"{winner} has been selected as the winner!")
 
 
 @rhelbot.tree.command(description="Adds a donated item to the item list")
