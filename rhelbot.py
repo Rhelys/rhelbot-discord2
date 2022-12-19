@@ -45,10 +45,11 @@ async def on_ready():
 @rhelbot.tree.command(
     description="Displays the number of unique entries in the Starlight giveaway"
 )
-async def starlightcount(interaction: discord.Interaction):
+@app_commands.describe(messageid="Message ID of the contest post")
+async def starlightcount(interaction: discord.Interaction, messageid: str):
     await interaction.response.defer()
     channel = rhelbot.get_channel(952012406341648454)
-    message = await channel.fetch_message(1045426377991659621)
+    message = await channel.fetch_message(int(messageid))
     contestants = set()
 
     for reaction in message.reactions:
@@ -62,15 +63,15 @@ async def starlightcount(interaction: discord.Interaction):
 )
 @app_commands.checks.has_any_role("Waltz Leadership (Flare)", "Amplifier")
 @app_commands.describe(messageid="Message ID of the contest post")
-async def starlightwinner(interaction: discord.Interaction, messageid: int):
+async def starlightwinner(interaction: discord.Interaction, messageid: str):
     await interaction.response.defer()
     channel = rhelbot.get_channel(952012406341648454)
-    message = await channel.fetch_message(messageid)
+    message = await channel.fetch_message(int(messageid))
     contestants = set()
 
     for reaction in message.reactions:
         async for user in reaction.users():
-            contestants.add(user)
+            contestants.add(user.mention)
 
     people = list(contestants)
     winner = random.choice(people)
