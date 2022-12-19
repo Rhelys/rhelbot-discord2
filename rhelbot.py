@@ -48,14 +48,20 @@ async def on_ready():
 @app_commands.describe(messageid="Message ID of the contest post")
 async def starlightcount(interaction: discord.Interaction, messageid: str):
     await interaction.response.defer()
-    channel = rhelbot.get_channel(952012406341648454)
+    channel = rhelbot.get_channel(615421445635440660)
     message = await channel.fetch_message(int(messageid))
     contestants = set()
+    reactionCount = 0
+
+    for reaction in message.reactions:
+        reactionCount += reaction.count
 
     for reaction in message.reactions:
         async for user in reaction.users():
             contestants.add(user)
-    await interaction.followup.send(f"{len(contestants)} have entered the giveaway")
+    await interaction.followup.send(
+        f"Across {reactionCount} reactions, {len(contestants)} unique users have entered the giveaway"
+    )
 
 
 @rhelbot.tree.command(
@@ -65,7 +71,7 @@ async def starlightcount(interaction: discord.Interaction, messageid: str):
 @app_commands.describe(messageid="Message ID of the contest post")
 async def starlightwinner(interaction: discord.Interaction, messageid: str):
     await interaction.response.defer()
-    channel = rhelbot.get_channel(952012406341648454)
+    channel = rhelbot.get_channel(615421445635440660)
     message = await channel.fetch_message(int(messageid))
     contestants = set()
 
