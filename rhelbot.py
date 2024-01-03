@@ -1,8 +1,10 @@
 import random
 import discord
 from discord import app_commands
+from discord.ext import commands
 import logging
 from typing import Optional
+import os
 
 # Setting up logs
 rhelbot_logs = logging.getLogger("discord")
@@ -13,26 +15,46 @@ handler.setFormatter(
 )
 rhelbot_logs.addHandler(handler)
 
-intents = discord.Intents.default()
-intents.message_content = True
 
-waltzId = discord.Object(id=266039174333726725)
-
-
-class RhelbotClient(discord.Client):
-    def __init__(self, *, intents: discord.Intents):
-        super().__init__(intents=intents)
-        self.tree = app_commands.CommandTree(self)
-
-    async def setup_hook(self):
-        self.tree.copy_global_to(guild=waltzId)
-        await self.tree.sync(guild=waltzId)
+waltzServer = discord.Object(id=266039174333726725)
+donkeyServer = discord.Object(id=591625815528177690)
 
 
 intents = discord.Intents.default()
 intents.message_content = True
-rhelbot = RhelbotClient(intents=intents)
+rhelbot = commands.Bot(command_prefix='!rhel',intents=intents)
 
+
+@rhelbot.tree.command()
+async def update(interaction: discord.Interaction):
+    print(f"Entering update function\n")
+    await rhelbot.tree.sync()
+    for f in os.listdir("./cogs"):
+        if f.endswith(".py"):
+           await rhelbot.load_extension("cogs." + f[:-3])
+
+
+@rhelbot.tree.command()
+async def check_cogs(interaction: discord.Interaction, cog_name: str):
+    await interaction.response.defer()
+    try:
+        await rhelbot.load_extension(f"cogs.{cog_name}")
+    except commands.ExtensionAlreadyLoaded:
+        await interaction.followup.send("Cog is loaded", ephemeral=True)
+    except commands.ExtensionNotFound:
+        await interaction.followup.send("Cog not found", ephemeral=True)
+    else:
+        await interaction.followup.send("Cog is unloaded", ephemeral=True)
+        await rhelbot.unload_extension(f"cogs.{cog_name}")
+
+
+@rhelbot.event
+async def setup_hook():
+    print(f"Entering setup_hook\n")
+    for f in os.listdir("./cogs"):
+        if f.endswith(".py"):
+           await rhelbot.load_extension("cogs." + f[:-3])
+    await rhelbot.tree.sync()
 
 @rhelbot.event
 async def on_ready():
@@ -42,73 +64,9 @@ async def on_ready():
         print(f"{guild.name} (id: {guild.id})\n")
 
 
-@rhelbot.tree.command(
-    description="Displays the number of unique entries in the Starlight giveaway"
-)
-@app_commands.describe(messageid="Message ID of the contest post")
-async def starlightcount(interaction: discord.Interaction, messageid: str):
-    await interaction.response.defer()
-    channel = rhelbot.get_channel(615421445635440660)
-    message = await channel.fetch_message(int(messageid))
-    contestants = set()
-    reactionCount = 0
-
-    for reaction in message.reactions:
-        reactionCount += reaction.count
-
-    for reaction in message.reactions:
-        async for user in reaction.users():
-            contestants.add(user)
-    await interaction.followup.send(
-        f"Across {reactionCount} reactions, {len(contestants)} unique users have entered the giveaway"
-    )
-
-
-@rhelbot.tree.command(
-    description="Selects a winner from the entries in the Starlight giveaway"
-)
-@app_commands.checks.has_any_role("Waltz Leadership (Flare)", "Amplifier")
-@app_commands.describe(messageid="Message ID of the contest post")
-async def starlightwinner(interaction: discord.Interaction, messageid: str):
-    await interaction.response.defer()
-    channel = rhelbot.get_channel(615421445635440660)
-    message = await channel.fetch_message(int(messageid))
-    contestants = set()
-
-    for reaction in message.reactions:
-        async for user in reaction.users():
-            contestants.add(user.mention)
-
-    people = list(contestants)
-    winner = random.choice(people)
-    await interaction.followup.send(f"{winner} has been selected as the winner!")
-
-
-@rhelbot.tree.command(description="Adds a donated item to the item list")
-@app_commands.checks.has_any_role("Waltz Leadership (Flare)", "Amplifier")
-@app_commands.describe(
-    item="Item donated",
-    member="Person who donated the item",
-    quantity="(Optional) Number of items donated. Defaults to 1 if not provided",
-)
-async def donate(
-    interaction: discord.Interaction, quantity: Optional[int], item: str, member: str
-):
-    await interaction.response.defer()
-
-    quantity = quantity or 1
-
-    itemfile = open("G:/My Drive/waltz_starlight_donations.txt", "a")
-    itemfile.write(f"{item},{member},{quantity}")
-    itemfile.write("\n")
-    itemfile.close()
-
-    await interaction.followup.send(
-        f"Recorded {quantity} {item}(s) donated by {member}\n"
-    )
-
-
 # Starting the bot
+print(f"Entering main function")
 bot_token_file = open("rhelbot_token.txt", "r")
 bot_token = bot_token_file.read()
 rhelbot.run(bot_token)
+
