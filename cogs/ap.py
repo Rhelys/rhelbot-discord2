@@ -5,7 +5,8 @@ from discord.ext import commands
 donkeyServer = discord.Object(id=591625815528177690)
 
 
-class ApCog(commands.GroupCog, name="ap"):
+@app_commands.guilds(donkeyServer)
+class ApCog(commands.GroupCog, group_name="ap"):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         super().__init__()  # this is now required in this context.
@@ -21,4 +22,4 @@ class ApCog(commands.GroupCog, name="ap"):
 
 async def setup(client) -> None:
     print(f"Entering AP cog setup\n")
-    await client.add_cog(ApCog(client), guild=donkeyServer)
+    await client.add_cog(ApCog(client))

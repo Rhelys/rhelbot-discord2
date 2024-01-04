@@ -1,10 +1,10 @@
-import random
 import discord
-from discord import app_commands
 from discord.ext import commands
 import logging
 from typing import Optional
 import os
+
+import cogs.ap
 
 # Setting up logs
 rhelbot_logs = logging.getLogger("discord")
@@ -15,26 +15,30 @@ handler.setFormatter(
 )
 rhelbot_logs.addHandler(handler)
 
-
 waltzServer = discord.Object(id=266039174333726725)
 donkeyServer = discord.Object(id=591625815528177690)
 
-
 intents = discord.Intents.default()
 intents.message_content = True
-rhelbot = commands.Bot(command_prefix='!rhel',intents=intents)
+rhelbot = commands.Bot(command_prefix='!rhel', intents=intents)
 
 
 @rhelbot.tree.command()
 async def update(interaction: discord.Interaction):
+    await interaction.response.defer()
     print(f"Entering update function\n")
     await rhelbot.tree.sync()
+    apcommands = cogs.ap.ApCog.walk_app_commands()
+    for command in apcommands:
+        print(command)
+'''
     for f in os.listdir("./cogs"):
         if f.endswith(".py"):
-           await rhelbot.load_extension("cogs." + f[:-3])
+            await rhelbot.load_extension("cogs." + f[:-3])
+'''
 
 
-@rhelbot.tree.command()
+@rhelbot.tree.command(description='Checks to see the status of a cog and loads it if not yet loaded')
 async def check_cogs(interaction: discord.Interaction, cog_name: str):
     await interaction.response.defer()
     try:
@@ -53,8 +57,11 @@ async def setup_hook():
     print(f"Entering setup_hook\n")
     for f in os.listdir("./cogs"):
         if f.endswith(".py"):
-           await rhelbot.load_extension("cogs." + f[:-3])
+            await rhelbot.load_extension("cogs." + f[:-3])
     await rhelbot.tree.sync()
+    for guild in rhelbot.guilds:
+        await rhelbot.tree.sync(guild=guild)
+
 
 @rhelbot.event
 async def on_ready():
@@ -69,4 +76,3 @@ print(f"Entering main function")
 bot_token_file = open("rhelbot_token.txt", "r")
 bot_token = bot_token_file.read()
 rhelbot.run(bot_token)
-
