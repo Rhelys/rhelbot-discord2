@@ -9,7 +9,7 @@ import cogs.ap
 # Setting up logs
 rhelbot_logs = logging.getLogger("discord")
 rhelbot_logs.setLevel(logging.INFO)
-handler = logging.FileHandler(filename="rhelbot.log", encoding="utf-8", mode="w")
+handler = logging.FileHandler(filename="log-rhelbot.log", encoding="utf-8", mode="w")
 handler.setFormatter(
     logging.Formatter("%(asctime)s:%(levelname)s:%(name)s: %(message)s")
 )
@@ -27,15 +27,15 @@ rhelbot = commands.Bot(command_prefix='!rhel', intents=intents)
 async def update(interaction: discord.Interaction):
     await interaction.response.defer()
     print(f"Entering update function\n")
-    await rhelbot.tree.sync()
-    apcommands = cogs.ap.ApCog.walk_app_commands()
-    for command in apcommands:
-        print(command)
-'''
+    for f in os.listdir("./cogs"):
+        if f.endswith(".py"):
+            await rhelbot.unload_extension("cogs." + f[:-3])
     for f in os.listdir("./cogs"):
         if f.endswith(".py"):
             await rhelbot.load_extension("cogs." + f[:-3])
-'''
+    await rhelbot.tree.sync(interaction.guild)
+    await rhelbot.tree.sync()
+    await interaction.followup.send('Update completed')
 
 
 @rhelbot.tree.command(description='Checks to see the status of a cog and loads it if not yet loaded')
