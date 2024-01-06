@@ -3,11 +3,15 @@ from discord import app_commands, HTTPException
 from discord.ext import commands
 import os
 import subprocess
-from time import sleep
+import asyncio
 import zipfile
 from typing import Optional
 
 donkeyServer = discord.Object(id=591625815528177690)
+
+outputdirectory = "./Archipelago/output/"
+apdirectory = "./Archipelago/"
+system_extensions = [".archipelago", ".txt", ".zip", ".apsave"]
 
 
 @app_commands.guilds(donkeyServer)
@@ -21,73 +25,83 @@ class ApCog(commands.GroupCog, group_name="ap"):
         await file.save(f'./Archipelago/players/{file.filename}')
         await interaction.response.send_message(f"{file.filename} uploaded to the game")
         # Todo - add in filetype validation
-        # Todo - add in player count/validation/tracking (use pyyaml)
         # Todo - add in error handling if filename already exists
+        # Todo - add in error handling if the slot name already exists (pyyaml)
 
     @app_commands.command(name="start", description="Starts the game. Either generates or takes an optional "
                                                     "pre-generated game file.")
     @app_commands.describe(file='Pre-generated zip file for an Archipelago game')
     async def ap_start(self, interaction: discord.Interaction, file: Optional[discord.Attachment]) -> None:
-        await interaction.response.defer()
-        initialMessage = await interaction.followup.send("Starting Archipelago server. If this message doesn't change "
-                                                         "within a minute, it means there was an error")
+        await interaction.response.send_message("Attempting to start Archipelago server. This will "
+                                                "take 2 minutes", ephemeral=True)
 
-        apdirectory = "C:/Users/Administrator/Documents/Archipelago/"
-        outputdirectory = "C:/Users/Administrator/Documents/Archipelago/output/"
+        # Todo - add error handling for submitted file to make sure it's a zip file and includes a .archipelago file
 
-        # Todo - Add handling for the optional game zip if no generation is needed
         if file:
-            await file.save("./Archipelago/output/donkey.zip")
+            await file.save(f'{outputdirectory}donkey.zip')
         else:
-            os.system(f'python ./Archipelago/Generate.py')
+            # Todo - Fix the generation async issue so asyncio.sleep isn't necessary
+            subprocess.Popen("python" + " ./Archipelago/Generate.py")
+            await asyncio.sleep(100)  # This is both duct tape and a bad idea, but it works for now
 
         outputfile = os.listdir(outputdirectory)
 
         # Todo - Refactor this to not be an absolute reference to the first object, just in case
         os.rename(f'{outputdirectory}{outputfile[0]}', f'{outputdirectory}donkey.zip')
         subprocess.Popen([r'serverstart.bat'])
-        sleep(5)
+        await asyncio.sleep(8)
 
-        await initialMessage.edit(content="Archipelago server started.\nServer: ap.rhelys.com")
-
-        # Todo - Send patch files back from the zip file
-        extensions = [".archipelago", ".txt", ".zip", ".apsave"]
+        await interaction.channel.send("Archipelago server started.\nServer: ap.rhelys.com")
 
         with zipfile.ZipFile(f'{outputdirectory}donkey.zip', mode='r') as gamefile:
             for file in gamefile.namelist():
-                if not file.endswith(tuple(extensions)):
+                if not file.endswith(tuple(system_extensions)):
                     gamefile.extract(file, f'{outputdirectory}')
+        gamefile.close()
 
-        response_files: list[discord.File] = []
-
-        # Todo - debug file locking issue when cleaning up
         finaloutputlist = os.listdir(outputdirectory)
-        for file in finaloutputlist:
-            if not file.endswith(tuple(extensions)) and os.path.isfile(f'{outputdirectory}/{file}'):
-                try:
-                    f = open(f'{outputdirectory}{file}', 'rb')
-                    response_files.append(discord.File(f, filename=file))
-                finally:
-                    f.close()
-        try:
-            await interaction.channel.send(files=response_files)
-        except HTTPException:
-            await interaction.channel.send("No additional patch files found")
 
-        # Todo - Allow for a pre-generated file to be sent instead of generating
+        for dirfile in finaloutputlist:
+            if not dirfile.endswith(tuple(system_extensions)) and os.path.isfile(f'{outputdirectory}/{dirfile}'):
+                with open(f'{outputdirectory}{dirfile}', 'rb') as f:
+                    await interaction.channel.send(file=discord.File(f, filename=dirfile))
 
-    @app_commands.command(name="cleanup", description="Deletes the output and player files from the last game")
+    @app_commands.command(name="cleanup", description="Cleans up the output and player files from the last game")
     async def ap_cleanup(self, interaction: discord.Interaction):
-        outputPath = './Archipelago/output'
-        outputfiles = os.listdir(outputPath)
+        outputfiles = os.listdir(outputdirectory)
 
         for file in outputfiles:
-            os.remove(f'{outputPath}/{file}')
+            os.remove(f'{outputdirectory}{file}')
 
         await interaction.response.send_message("File cleanup complete", ephemeral=True)
         # Todo - Store player files somewhere with the date of the game and remove them for next generation
 
-    # Todo - New command to serve spoiler file back to the channel (use zipfile)
+    @app_commands.command(name="spoiler", description="Pulls the spoiler log from the current game")
+    async def ap_spoiler(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+
+        outputfiles = os.listdir(outputdirectory)
+
+        for file in outputfiles:
+            if file.endswith(".zip"):
+                with zipfile.ZipFile(f'{outputdirectory}donkey.zip', mode='r') as gamefile:
+                    for zipped_file in gamefile.namelist():
+                        if zipped_file.endswith("Spoiler.txt"):
+                            gamefile.extract(zipped_file, outputdirectory)
+                            with open(f'{outputdirectory}{zipped_file}', 'rb') as spoiler:
+                                await interaction.followup.send("Spoiler file for current game")
+                                await interaction.channel.send(discord.File(spoiler, filename="Spoiler.txt"))
+                gamefile.close()
+
+    # Todo - game/server/file status command
+    @app_commands.command(name="status", description="Gets the status and players of the current or pending game")
+    async def ap_status(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        # Todo - add in player count
+        # Todo - add in player list
+        # Todo - add in server status
+
+        await interaction.followup.send("Status function")
 
 
 async def setup(client) -> None:
