@@ -3,8 +3,7 @@ from discord.ext import commands
 import logging
 from typing import Optional
 import os
-
-import cogs.ap
+import yaml
 
 # Setting up logs
 rhelbot_logs = logging.getLogger("discord")
@@ -20,25 +19,28 @@ donkeyServer = discord.Object(id=591625815528177690)
 
 intents = discord.Intents.default()
 intents.message_content = True
-rhelbot = commands.Bot(command_prefix='!rhel', intents=intents)
+rhelbot = commands.Bot(command_prefix="!rhel", intents=intents)
 
 
-@rhelbot.tree.command()
+@rhelbot.tree.command(
+    description="Reloads/updates bot commands without having to restart the entire bot process"
+)
 async def update(interaction: discord.Interaction):
-    await interaction.response.defer()
+    await interaction.response.send_message("Starting update process", ephemeral=True)
     print(f"Entering update function\n")
     for f in os.listdir("./cogs"):
         if f.endswith(".py"):
-            await rhelbot.unload_extension("cogs." + f[:-3])
-    for f in os.listdir("./cogs"):
-        if f.endswith(".py"):
-            await rhelbot.load_extension("cogs." + f[:-3])
-    await rhelbot.tree.sync(interaction.guild)
+            await rhelbot.reload_extension("cogs." + f[:-3])
+            await interaction.channel.send(f"Reloaded {f} Cog")
+    for guild in rhelbot.guilds:
+        await rhelbot.tree.sync(guild=guild)
     await rhelbot.tree.sync()
-    await interaction.followup.send('Update completed')
+    await interaction.edit_original_response(content="Update completed")
 
 
-@rhelbot.tree.command(description='Checks to see the status of a cog and loads it if not yet loaded')
+@rhelbot.tree.command(
+    description="Checks to see the status of a cog and loads it if not yet loaded"
+)
 async def check_cogs(interaction: discord.Interaction, cog_name: str):
     await interaction.response.defer()
     try:
