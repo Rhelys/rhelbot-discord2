@@ -54,6 +54,20 @@ async def check_cogs(interaction: discord.Interaction, cog_name: str):
         await rhelbot.unload_extension(f"cogs.{cog_name}")
 
 
+@rhelbot.tree.command(description="Right to jail", guild=donkeyServer)
+@commands.has_any_role("Rhelbot")
+async def theon(interaction: discord.Interaction):
+    guild = interaction.guild
+    member = guild.get_member(381620359230652421)
+    gulag = rhelbot.get_channel(922023425042681896)
+    try:
+        await member.move_to(gulag)
+        await interaction.response.send_message("Bye Theon")
+    except:
+        await interaction.response.send_message("Theon isn't here right now")
+        return
+
+
 @rhelbot.event
 async def setup_hook():
     print(f"Entering setup_hook\n")

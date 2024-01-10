@@ -43,7 +43,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
         with open(self.status_file) as status:
             for line in status:
                 name, file = line.rstrip("\n").split(":")
-                current_players[name] = file
+                current_players[name.capitalize()] = file
 
         return current_players
 
@@ -109,11 +109,13 @@ class ApCog(commands.GroupCog, group_name="ap"):
                         f"{self.player} already exists in another file. "
                         "Remove the second file before submitting again"
                     )
+                    os.remove(filepath)
 
             else:
                 await self.upload_success(filepath, interaction)
                 with open("game_status.txt", "a+") as status_file:
-                    status_file.write(f"{self.player}:{filepath}\n")
+                    capital_player = self.player.capitalize()
+                    status_file.write(f"{capital_player}:{filepath}\n")
 
         else:
             await interaction.followup.send(
@@ -256,6 +258,10 @@ class ApCog(commands.GroupCog, group_name="ap"):
             await interaction.followup.send("No current players in the game")
             return
 
+        if not current_players:
+            await interaction.followup.send("No current players in the game")
+            return
+
         playerlist = list(current_players.keys())
 
         await interaction.followup.send(
@@ -274,7 +280,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
         file_lines = []
         player_dict = self.list_players()
 
-        os.remove(player_dict[player])
+        os.remove(player_dict[player.capitalize()])
 
         with open(self.status_file, "r") as player_list:
             file_lines = player_list.readlines()
@@ -282,10 +288,12 @@ class ApCog(commands.GroupCog, group_name="ap"):
 
         with open(self.status_file, "w") as player_list:
             for line in file_lines:
-                if not line.startswith(player):
+                if not line.startswith(player.capitalize()):
                     player_list.write(line)
 
-        await interaction.response.send_message(f"{player}'s file has been deleted")
+        await interaction.response.send_message(
+            f"{player.capitalize()}'s file has been deleted"
+        )
 
     @app_commands.command(
         name="help", description="Basic Archipelago setup information and game lists"
