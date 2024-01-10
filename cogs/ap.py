@@ -25,7 +25,6 @@ class ApCog(commands.GroupCog, group_name="ap"):
     status_file = "./game_status.txt"
     player = ""
     game = ""
-    current_players = {}
 
     async def upload_success(self, filepath: str, interaction: discord.Interaction):
         with open(filepath, "rb") as submitted_file:
@@ -36,6 +35,17 @@ class ApCog(commands.GroupCog, group_name="ap"):
                     submitted_file, filename=f"{self.player}_{self.game}.yaml"
                 ),
             )
+
+    def list_players(self):
+        current_players = {}
+
+        # Pulling the list of current players in the game for reference/comparison
+        with open(self.status_file) as status:
+            for line in status:
+                name, file = line.rstrip("\n").split(":")
+                current_players[name] = file
+
+        return current_players
 
     """
     /ap join -  Takes in a yaml file from a discord member, checks to make sure it's a valid file and that we're not
@@ -67,6 +77,11 @@ class ApCog(commands.GroupCog, group_name="ap"):
     ) -> None:
         await interaction.response.defer()
 
+        try:
+            current_players = self.list_players()
+        except AttributeError:
+            print("No players yet")
+
         if playerfile.filename.endswith(".yaml"):
             await interaction.followup.send("Processing file")
 
@@ -84,17 +99,12 @@ class ApCog(commands.GroupCog, group_name="ap"):
                     self.player = element.get("name")
                     self.game = element.get("game")
 
-            # Pulling the list of current players in the game for reference/comparison
-            with open(self.status_file) as status:
-                for line in status:
-                    name, file = line.rstrip("\n").split(":")
-                    self.current_players[name] = file
-
-            if self.player in self.current_players:
-                if filepath == self.current_players[self.player]:
+            if self.player in current_players:
+                if filepath == current_players[self.player]:
                     await self.upload_success(filepath, interaction)
                 else:
-                    # Todo - setup the secondary edit https://stackoverflow.com/questions/75009840/how-i-can-edit-followup-message-discord-py
+                    # Todo - setup the secondary edit https://stackoverflow.com/questions/75009840/how-i-can-edit
+                    #  -followup-message-discord-py
                     await interaction.channel.send(
                         f"{self.player} already exists in another file. "
                         "Remove the second file before submitting again"
@@ -239,11 +249,19 @@ class ApCog(commands.GroupCog, group_name="ap"):
     )
     async def ap_status(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        # Todo - add in player count
-        # Todo - add in player list
-        # Todo - add in server status
 
-        await interaction.followup.send("Status function")
+        try:
+            current_players = self.list_players()
+        except AttributeError:
+            await interaction.followup.send("No current players in the game")
+            return
+
+        playerlist = list(current_players.keys())
+
+        await interaction.followup.send(
+            f"Current players: {playerlist}\n" f"Game status: Unknown"
+        )
+        # Todo - add in server status
 
     # Todo - Remove single player from game (/ap leave)
     @app_commands.command(
@@ -251,14 +269,23 @@ class ApCog(commands.GroupCog, group_name="ap"):
         description="Deletes player's file from the staged files. "
         " Returns list of current players without a selection.",
     )
-    @app_commands.describe(
-        player="Player/slot name to clear the file of. Will return current players if none are selected"
-    )
-    async def ap_leave(self, interaction: discord.Interaction, player: Optional[str]):
-        if player:
-            return
-        else:
-            return
+    @app_commands.describe(player="Removes yaml file for selected player from the game")
+    async def ap_leave(self, interaction: discord.Interaction, player: str):
+        file_lines = []
+        player_dict = self.list_players()
+
+        os.remove(player_dict[player])
+
+        with open(self.status_file, "r") as player_list:
+            file_lines = player_list.readlines()
+            print(file_lines)
+
+        with open(self.status_file, "w") as player_list:
+            for line in file_lines:
+                if not line.startswith(player):
+                    player_list.write(line)
+
+        await interaction.response.send_message(f"{player}'s file has been deleted")
 
     @app_commands.command(
         name="help", description="Basic Archipelago setup information and game lists"
