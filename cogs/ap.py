@@ -12,16 +12,30 @@ from ruyaml import YAML
 
 donkeyServer = discord.Object(id=591625815528177690)
 
-outputdirectory = "./Archipelago/output/"
-apdirectory = "./Archipelago/"
-system_extensions = [".archipelago", ".txt", ".zip", ".apsave"]
-
 
 @app_commands.guilds(donkeyServer)
 class ApCog(commands.GroupCog, group_name="ap"):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         super().__init__()  # this is now required in this context.
+
+    output_directory = "./Archipelago/output/"
+    ap_directory = "./Archipelago/"
+    system_extensions = [".archipelago", ".txt", ".zip", ".apsave"]
+    status_file = "./game_status.txt"
+    player = ""
+    game = ""
+    current_players = {}
+
+    async def upload_success(self, filepath: str, interaction: discord.Interaction):
+        with open(filepath, "rb") as submitted_file:
+            await interaction.channel.send(
+                content="Player joined successfully\nPlayer: {}\n"
+                "Game: {}".format(self.player, self.game),
+                file=discord.File(
+                    submitted_file, filename=f"{self.player}_{self.game}.yaml"
+                ),
+            )
 
     """
     /ap join -  Takes in a yaml file from a discord member, checks to make sure it's a valid file and that we're not
@@ -46,7 +60,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
         description="Adds your yaml config file to the pending Archipelago game",
     )
     @app_commands.describe(
-        playerfile="Your .yaml file. Must be for a unique player slot"
+        playerfile="Your .yaml file. Must be for a unique player slot or an edit on your existing file"
     )
     async def ap_join(
         self, interaction: discord.Interaction, playerfile: discord.Attachment
@@ -55,35 +69,48 @@ class ApCog(commands.GroupCog, group_name="ap"):
 
         if playerfile.filename.endswith(".yaml"):
             await interaction.followup.send("Processing file")
-            player = ""
-            game = ""
 
             filepath = f"./Archipelago/players/{playerfile.filename}"
             await playerfile.save(filepath)
 
+            # Pulling out the player name and their game from the submitted yaml file
             with open(filepath, "r", encoding="utf-8") as playeryaml:
                 yaml_object = YAML(typ="safe", pure=True)
                 raw_data = yaml_object.load_all(playeryaml)
                 data_list = list(raw_data)
 
+                # Setting the metadata for the rest of the comparisons from the submitted file
                 for element in data_list:
-                    player = element.get("name")
-                    game = element.get("game")
+                    self.player = element.get("name")
+                    self.game = element.get("game")
 
-            with open(filepath, "rb") as submitted_file:
-                await interaction.channel.send(
-                    content="Player joined successfully\nPlayer: {}\n"
-                    "Game: {}".format(player, game),
-                    file=discord.File(submitted_file, filename=f"{player}_{game}.yaml"),
-                )
+            # Pulling the list of current players in the game for reference/comparison
+            with open(self.status_file) as status:
+                for line in status:
+                    name, file = line.rstrip("\n").split(":")
+                    self.current_players[name] = file
+
+            if self.player in self.current_players:
+                if filepath == self.current_players[self.player]:
+                    await self.upload_success(filepath, interaction)
+                else:
+                    # Todo - setup the secondary edit https://stackoverflow.com/questions/75009840/how-i-can-edit-followup-message-discord-py
+                    await interaction.channel.send(
+                        f"{self.player} already exists in another file. "
+                        "Remove the second file before submitting again"
+                    )
+
+            else:
+                await self.upload_success(filepath, interaction)
+                with open("game_status.txt", "a+") as status_file:
+                    status_file.write(f"{self.player}:{filepath}\n")
 
         else:
             await interaction.followup.send(
                 f"File supplied is not a yaml file. Check that you uploaded the "
                 f"correct file and try again"
             )
-        # Todo - add in error handling if filename already exists
-        # Todo - add in error handling if the slot name already exists (ruyaml)
+        # Todo - add in error handling if the slot name already exists
 
     """
     /ap start - Starts the 
@@ -107,7 +134,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
         # Todo - add error handling for submitted file to make sure it's a zip file and includes a .archipelago file
         if apfile:
             if apfile.filename.endswith(".zip"):
-                await apfile.save(f"{outputdirectory}donkey.zip")
+                await apfile.save(f"{self.output_directory}donkey.zip")
             else:
                 await interaction.edit_original_response(
                     content="File submitted was not a .zip file. Submit a valid "
@@ -121,10 +148,13 @@ class ApCog(commands.GroupCog, group_name="ap"):
                 120
             )  # This is both duct tape and a bad idea, but it works for now
 
-        outputfile = os.listdir(outputdirectory)
+        outputfile = os.listdir(self.output_directory)
 
         # Todo - Refactor this to not be an absolute reference to the first object, just in case
-        os.rename(f"{outputdirectory}{outputfile[0]}", f"{outputdirectory}donkey.zip")
+        os.rename(
+            f"{self.output_directory}{outputfile[0]}",
+            f"{self.output_directory}donkey.zip",
+        )
         subprocess.Popen([r"serverstart.bat"])
         await sleep(8)
 
@@ -132,19 +162,21 @@ class ApCog(commands.GroupCog, group_name="ap"):
             "Archipelago server started.\nServer: ap.rhelys.com\nPort: 38281"
         )
 
-        with zipfile.ZipFile(f"{outputdirectory}donkey.zip", mode="r") as gamefile:
+        with zipfile.ZipFile(
+            f"{self.output_directory}donkey.zip", mode="r"
+        ) as gamefile:
             for file in gamefile.namelist():
-                if not file.endswith(tuple(system_extensions)):
-                    gamefile.extract(file, f"{outputdirectory}")
+                if not file.endswith(tuple(self.system_extensions)):
+                    gamefile.extract(file, f"{self.output_directory}")
         gamefile.close()
 
-        finaloutputlist = os.listdir(outputdirectory)
+        finaloutputlist = os.listdir(self.output_directory)
 
         for dirfile in finaloutputlist:
-            if not dirfile.endswith(tuple(system_extensions)) and os.path.isfile(
-                f"{outputdirectory}/{dirfile}"
+            if not dirfile.endswith(tuple(self.system_extensions)) and os.path.isfile(
+                f"{self.output_directory}/{dirfile}"
             ):
-                with open(f"{outputdirectory}{dirfile}", "rb") as f:
+                with open(f"{self.output_directory}{dirfile}", "rb") as f:
                     await interaction.channel.send(
                         file=discord.File(f, filename=dirfile)
                     )
@@ -162,10 +194,11 @@ class ApCog(commands.GroupCog, group_name="ap"):
         description="Cleans up the output and player files from the last game",
     )
     async def ap_cleanup(self, interaction: discord.Interaction):
-        outputfiles = os.listdir(outputdirectory)
+        def outputfiles():
+            return os.listdir(self.output_directory)
 
-        for file in outputfiles:
-            os.remove(f"{outputdirectory}{file}")
+        for file in outputfiles():
+            os.remove(f"{self.output_directory}{file}")
 
         await interaction.response.send_message("File cleanup complete", ephemeral=True)
         # Todo - Store player files somewhere with the date of the game and remove them for next generation
@@ -176,33 +209,28 @@ class ApCog(commands.GroupCog, group_name="ap"):
     async def ap_spoiler(self, interaction: discord.Interaction):
         await interaction.response.defer()
 
-        outputfiles = os.listdir(outputdirectory)
+        def outputfiles():
+            return os.listdir(self.output_directory)
 
-        for file in outputfiles:
+        for file in outputfiles():
             if file.endswith(".zip"):
                 with zipfile.ZipFile(
-                    f"{outputdirectory}donkey.zip", mode="r"
+                    f"{self.output_directory}donkey.zip", mode="r"
                 ) as gamefile:
                     for zipped_file in gamefile.namelist():
                         if zipped_file.endswith("Spoiler.txt"):
-                            gamefile.extract(zipped_file, outputdirectory)
+                            gamefile.extract(zipped_file, self.output_directory)
                             await sleep(3)
                             await interaction.followup.send(
                                 "Spoiler file for current game"
                             )
-                            outputfiles2 = os.listdir(outputdirectory)
-                            for endfile in outputfiles2:
-                                if endfile.endswith("Spoiler.txt"):
-                                    with open(
-                                        f"{outputdirectory}{endfile}", "rb"
-                                    ) as sendfile:
-                                        await interaction.channel.send(
-                                            file=discord.File(
-                                                sendfile, filename="Spoiler.txt"
-                                            )
-                                        )
 
-                gamefile.close()
+        for endfile in outputfiles():
+            if endfile.endswith("Spoiler.txt"):
+                with open(f"{self.output_directory}{endfile}", "rb") as sendfile:
+                    await interaction.channel.send(
+                        file=discord.File(sendfile, filename="Spoiler.txt")
+                    )
 
     # Todo - game/server/file status command
     @app_commands.command(
@@ -223,12 +251,27 @@ class ApCog(commands.GroupCog, group_name="ap"):
         description="Deletes player's file from the staged files. "
         " Returns list of current players without a selection.",
     )
-    @app_commands.describe(player="Player/slot name to clear the file of")
+    @app_commands.describe(
+        player="Player/slot name to clear the file of. Will return current players if none are selected"
+    )
     async def ap_leave(self, interaction: discord.Interaction, player: Optional[str]):
         if player:
             return
         else:
             return
+
+    @app_commands.command(
+        name="help", description="Basic Archipelago setup information and game lists"
+    )
+    async def ap_help(self, interaction: discord.Interaction):
+        await interaction.response.send_message(
+            "# __Archipelago Setup Resources__\n"
+            "* Main site: https://archipelago.gg/\n"
+            "* Beta site: http://archipelago.gg:24242/\n"
+            "* Setup guides: https://archipelago.gg/tutorial/\n"
+            "* Alpha games: https://canary.discord.com/channels/731205301247803413/1009608126321922180\n"
+            "* Archipelago Discord: https://discord.gg/8Z65BR2"
+        )
 
 
 async def setup(client) -> None:
