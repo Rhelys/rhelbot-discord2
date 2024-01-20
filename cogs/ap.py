@@ -21,7 +21,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
 
     output_directory = "./Archipelago/output/"
     ap_directory = "./Archipelago/"
-    system_extensions = [".archipelago", ".txt", ".zip", ".apsave"]
+    system_extensions = [".archipelago", ".txt", ".apsave"]
     status_file = "./game_status.txt"
     player = ""
     game = ""
@@ -89,6 +89,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
             await playerfile.save(filepath)
 
             # Pulling out the player name and their game from the submitted yaml file
+            # Todo - Add the game each person is playing to the status file
             with open(filepath, "r", encoding="utf-8") as playeryaml:
                 yaml_object = YAML(typ="safe", pure=True)
                 raw_data = yaml_object.load_all(playeryaml)
@@ -122,13 +123,17 @@ class ApCog(commands.GroupCog, group_name="ap"):
                 f"File supplied is not a yaml file. Check that you uploaded the "
                 f"correct file and try again"
             )
-        # Todo - add in error handling if the slot name already exists
 
     """
-    /ap start - Starts the 
+    /ap start - Generates the game files from uploaded player files and then starts the server. Optionally
+                takes in a pre-generated file to start up.
+                
+    Parameters: [Optional] apfile: Generated .zip file from Archipelago to start with the server
     
     """
 
+    # Todo - Find out how to connect the bot to the server + channel for status messages
+    # https://github.com/LegendaryLinux/ArchipelaBot
     @app_commands.command(
         name="start",
         description="Starts the game. Either generates or takes an optional "
@@ -139,8 +144,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
         self, interaction: discord.Interaction, apfile: Optional[discord.Attachment]
     ) -> None:
         await interaction.response.send_message(
-            "Attempting to start Archipelago server. This will " "take 2 minutes",
-            ephemeral=True,
+            "Attempting to start Archipelago server. This will " "take 2 minutes"
         )
 
         # Todo - add error handling for submitted file to make sure it's a zip file and includes a .archipelago file
@@ -170,8 +174,8 @@ class ApCog(commands.GroupCog, group_name="ap"):
         subprocess.Popen([r"serverstart.bat"])
         await sleep(8)
 
-        await interaction.channel.send(
-            "Archipelago server started.\nServer: ap.rhelys.com\nPort: 38281"
+        await interaction.edit_original_response(
+            content="Archipelago server started.\nServer: ap.rhelys.com\nPort: 38281\nPassword: 1440"
         )
 
         with zipfile.ZipFile(
@@ -185,7 +189,9 @@ class ApCog(commands.GroupCog, group_name="ap"):
         finaloutputlist = os.listdir(self.output_directory)
 
         for dirfile in finaloutputlist:
-            if not dirfile.endswith(tuple(self.system_extensions)) and os.path.isfile(
+            if dirfile == "donkey.zip":
+                print("Skipping output zip")
+            elif not dirfile.endswith(tuple(self.system_extensions)) and os.path.isfile(
                 f"{self.output_directory}/{dirfile}"
             ):
                 with open(f"{self.output_directory}{dirfile}", "rb") as f:
@@ -244,7 +250,6 @@ class ApCog(commands.GroupCog, group_name="ap"):
                         file=discord.File(sendfile, filename="Spoiler.txt")
                     )
 
-    # Todo - game/server/file status command
     @app_commands.command(
         name="status",
         description="Gets the status and players of the current or pending game",
@@ -262,6 +267,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
             await interaction.followup.send("No current players in the game")
             return
 
+        # Todo - Add the game each person is playing
         playerlist = list(current_players.keys())
 
         await interaction.followup.send(
@@ -269,7 +275,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
         )
         # Todo - add in server status
 
-    # Todo - Remove single player from game (/ap leave)
+    # Todo - Handle the played game as another line variable
     @app_commands.command(
         name="leave",
         description="Deletes player's file from the staged files. "
@@ -284,7 +290,6 @@ class ApCog(commands.GroupCog, group_name="ap"):
 
         with open(self.status_file, "r") as player_list:
             file_lines = player_list.readlines()
-            print(file_lines)
 
         with open(self.status_file, "w") as player_list:
             for line in file_lines:
@@ -313,3 +318,4 @@ async def setup(client) -> None:
     print(f"Entering AP cog setup\n")
     await client.add_cog(ApCog(client))
     await client.tree.sync(guild=donkeyServer)
+    print("AP cog setup complete\n")
