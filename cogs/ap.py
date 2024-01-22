@@ -1,7 +1,7 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
-import os
+from os import remove, listdir, close, rename, path
 import subprocess
 from asyncio import sleep
 import zipfile
@@ -46,6 +46,30 @@ class ApCog(commands.GroupCog, group_name="ap"):
                 current_players[name.capitalize()] = file
 
         return current_players
+
+    @app_commands.command(
+        name="addgame",
+        description="Adds a new .apworld file to the server for future games",
+    )
+    @app_commands.describe(
+        apworld="Valid .apworld for a new game that the server doesn't support"
+    )
+    async def ap_add_game(
+        self, interaction: discord.Interaction, apworld: discord.Attachment
+    ):
+        await interaction.response.defer()
+
+        if not apworld.filename.endswith(".apworld"):
+            await interaction.followup.send(
+                "Not a .apworld file. Make sure you've selected the right file for upload"
+            )
+            return
+
+        await apworld.save(f"{self.ap_directory}/worlds/{apworld.filename}")
+        await interaction.followup.send(
+            "File added. If your game requires a patch file to be generated then work with the server owner to ensure "
+            "your game will generate successfully"
+        )
 
     """
     /ap join -  Takes in a yaml file from a discord member, checks to make sure it's a valid file and that we're not
@@ -110,7 +134,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
                         f"{self.player} already exists in another file. "
                         "Remove the second file before submitting again"
                     )
-                    os.remove(filepath)
+                    remove(filepath)
 
             else:
                 await self.upload_success(filepath, interaction)
@@ -150,7 +174,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
         # Todo - add error handling for submitted file to make sure it's a zip file and includes a .archipelago file
         if apfile:
             if apfile.filename.endswith(".zip"):
-                await apfile.save(f"{self.output_directory}donkey.zip")
+                await apfile.save(f"{self.output_directory}/donkey.zip")
             else:
                 await interaction.edit_original_response(
                     content="File submitted was not a .zip file. Submit a valid "
@@ -164,12 +188,12 @@ class ApCog(commands.GroupCog, group_name="ap"):
                 120
             )  # This is both duct tape and a bad idea, but it works for now
 
-        outputfile = os.listdir(self.output_directory)
+        outputfile = listdir(self.output_directory)
 
         # Todo - Refactor this to not be an absolute reference to the first object, just in case
-        os.rename(
+        rename(
             f"{self.output_directory}{outputfile[0]}",
-            f"{self.output_directory}donkey.zip",
+            f"{self.output_directory}/donkey.zip",
         )
         subprocess.Popen([r"serverstart.bat"])
         await sleep(8)
@@ -179,22 +203,22 @@ class ApCog(commands.GroupCog, group_name="ap"):
         )
 
         with zipfile.ZipFile(
-            f"{self.output_directory}donkey.zip", mode="r"
+            f"{self.output_directory}/donkey.zip", mode="r"
         ) as gamefile:
             for file in gamefile.namelist():
                 if not file.endswith(tuple(self.system_extensions)):
                     gamefile.extract(file, f"{self.output_directory}")
         gamefile.close()
 
-        finaloutputlist = os.listdir(self.output_directory)
+        finaloutputlist = listdir(self.output_directory)
 
         for dirfile in finaloutputlist:
             if dirfile == "donkey.zip":
                 print("Skipping output zip")
-            elif not dirfile.endswith(tuple(self.system_extensions)) and os.path.isfile(
+            elif not dirfile.endswith(tuple(self.system_extensions)) and path.isfile(
                 f"{self.output_directory}/{dirfile}"
             ):
-                with open(f"{self.output_directory}{dirfile}", "rb") as f:
+                with open(f"{self.output_directory}/{dirfile}", "rb") as f:
                     await interaction.channel.send(
                         file=discord.File(f, filename=dirfile)
                     )
@@ -213,10 +237,10 @@ class ApCog(commands.GroupCog, group_name="ap"):
     )
     async def ap_cleanup(self, interaction: discord.Interaction):
         def outputfiles():
-            return os.listdir(self.output_directory)
+            return listdir(self.output_directory)
 
         for file in outputfiles():
-            os.remove(f"{self.output_directory}{file}")
+            remove(f"{self.output_directory}/{file}")
 
         await interaction.response.send_message("File cleanup complete", ephemeral=True)
         # Todo - Store player files somewhere with the date of the game and remove them for next generation
@@ -228,12 +252,12 @@ class ApCog(commands.GroupCog, group_name="ap"):
         await interaction.response.defer()
 
         def outputfiles():
-            return os.listdir(self.output_directory)
+            return listdir(self.output_directory)
 
         for file in outputfiles():
             if file.endswith(".zip"):
                 with zipfile.ZipFile(
-                    f"{self.output_directory}donkey.zip", mode="r"
+                    f"{self.output_directory}/donkey.zip", mode="r"
                 ) as gamefile:
                     for zipped_file in gamefile.namelist():
                         if zipped_file.endswith("Spoiler.txt"):
@@ -245,7 +269,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
 
         for endfile in outputfiles():
             if endfile.endswith("Spoiler.txt"):
-                with open(f"{self.output_directory}{endfile}", "rb") as sendfile:
+                with open(f"{self.output_directory}/{endfile}", "rb") as sendfile:
                     await interaction.channel.send(
                         file=discord.File(sendfile, filename="Spoiler.txt")
                     )
@@ -275,7 +299,6 @@ class ApCog(commands.GroupCog, group_name="ap"):
         )
         # Todo - add in server status
 
-    # Todo - Handle the played game as another line variable
     @app_commands.command(
         name="leave",
         description="Deletes player's file from the staged files. "
@@ -286,19 +309,37 @@ class ApCog(commands.GroupCog, group_name="ap"):
         file_lines = []
         player_dict = self.list_players()
 
-        os.remove(player_dict[player.capitalize()])
+        if player.lower() == "all":
+            for player_line in player_dict:
+                remove(player_dict[player_line])
 
-        with open(self.status_file, "r") as player_list:
-            file_lines = player_list.readlines()
+            remove(self.status_file)
 
-        with open(self.status_file, "w") as player_list:
-            for line in file_lines:
-                if not line.startswith(player.capitalize()):
-                    player_list.write(line)
+            with open(self.status_file, "x") as file:
+                await interaction.response.send_message(
+                    f"All player files have been deleted"
+                )
 
-        await interaction.response.send_message(
-            f"{player.capitalize()}'s file has been deleted"
-        )
+        else:
+            try:
+                remove(player_dict[player.capitalize()])
+            except KeyError:
+                await interaction.response.send_message(
+                    f"{player.capitalize()} is not in the game. Check current players with /ap status"
+                )
+                return
+
+            with open(self.status_file, "r") as player_list:
+                file_lines = player_list.readlines()
+
+            with open(self.status_file, "w") as player_list:
+                for line in file_lines:
+                    if not line.startswith(player.capitalize()):
+                        player_list.write(line)
+
+            await interaction.response.send_message(
+                f"{player.capitalize()}'s file has been deleted"
+            )
 
     @app_commands.command(
         name="help", description="Basic Archipelago setup information and game lists"
