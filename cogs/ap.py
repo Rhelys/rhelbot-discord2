@@ -19,6 +19,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
         self.bot = bot
         super().__init__()  # this is now required in this context.
 
+    # Config section - To be updated if anything moves around, or it's going to be run by someone else
     output_directory = "./Archipelago/output/"
     ap_directory = "./Archipelago/"
     system_extensions = [".archipelago", ".txt", ".apsave"]

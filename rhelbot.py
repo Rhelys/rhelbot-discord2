@@ -3,7 +3,6 @@ from discord.ext import commands
 import logging
 from typing import Optional
 import os
-import yaml
 
 # Setting up logs
 rhelbot_logs = logging.getLogger("discord")
@@ -31,7 +30,7 @@ async def update(interaction: discord.Interaction):
     for f in os.listdir("./cogs"):
         if f.endswith(".py"):
             await rhelbot.reload_extension("cogs." + f[:-3])
-            await interaction.channel.send(f"Reloaded {f} Cog")
+            await interaction.channel.send(f"Reloaded {f[:-3]} Cog")
     for guild in rhelbot.guilds:
         await rhelbot.tree.sync(guild=guild)
     await rhelbot.tree.sync()
@@ -54,6 +53,11 @@ async def check_cogs(interaction: discord.Interaction, cog_name: str):
         await rhelbot.unload_extension(f"cogs.{cog_name}")
 
 
+@rhelbot.tree.command(description="Kitty pls", guild=donkeyServer)
+async def kitty(interaction: discord.Interaction):
+    await interaction.response.send_message("<@&902282275360763965>")
+
+
 @rhelbot.tree.command(description="Right to jail", guild=donkeyServer)
 @commands.has_any_role("Rhelbot")
 async def theon(interaction: discord.Interaction):
@@ -65,6 +69,36 @@ async def theon(interaction: discord.Interaction):
         await interaction.response.send_message("Bye Theon")
     except:
         await interaction.response.send_message("Theon isn't here right now")
+        return
+
+
+@rhelbot.tree.command(description="Let the malding cease", guild=donkeyServer)
+@commands.has_any_role("i want a pretty color")
+async def cal(interaction: discord.Interaction):
+    guild = interaction.guild
+    member = guild.get_member(187413059315302401)
+    try:
+        await member.edit(mute=True)
+        await interaction.response.send_message(
+            "Shhhh... Its quiet now :)", ephemeral=True
+        )
+    except:
+        await interaction.response.send_message(
+            "Cal isn't here right now, it should already be quiet", ephemeral=True
+        )
+        return
+
+
+@rhelbot.tree.command(description="No", guild=donkeyServer)
+async def rhelys(interaction: discord.Interaction):
+    guild = interaction.guild
+    member = interaction.user
+    gulag = rhelbot.get_channel(922023425042681896)
+    try:
+        await member.move_to(gulag)
+        await interaction.response.send_message("No, fuck you. You go to gulag")
+    except:
+        await interaction.response.send_message("Nice try, but no")
         return
 
 
