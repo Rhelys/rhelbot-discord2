@@ -8,7 +8,7 @@ waltzServer = discord.Object(id=266039174333726725)
 
 
 @app_commands.guilds(waltzServer)
-class WaltzCog(commands.GroupCog, group_name="waltz"):
+class WaltzCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
