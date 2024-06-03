@@ -1,22 +1,24 @@
 import discord
+import random
 from discord import app_commands
 from discord.ext import commands
+from typing import Optional
 
 waltzServer = discord.Object(id=266039174333726725)
 
 
-class WaltzCog(commands.Cog):
+@app_commands.guilds(waltzServer)
+class WaltzCog(commands.GroupCog, group_name="waltz"):
     def __init__(self, bot):
         self.bot = bot
 
     @app_commands.command(
-        description="Displays the number of unique entries in the Starlight giveaway",
-        guild=waltzServer
+        description="Displays the number of unique entries in the Starlight giveaway"
     )
     @app_commands.describe(messageid="Message ID of the contest post")
-    async def starlightcount(interaction: discord.Interaction, messageid: str):
+    async def contestcount(self, interaction: discord.Interaction, messageid: str):
         await interaction.response.defer()
-        channel = rhelbot.get_channel(615421445635440660)
+        channel = self.get_channel(615421445635440660)
         message = await channel.fetch_message(int(messageid))
         contestants = set()
         reactionCount = 0
@@ -32,14 +34,15 @@ class WaltzCog(commands.Cog):
         )
 
     @app_commands.command(
-        description="Selects a winner from the entries in the Starlight giveaway",
-        guild=waltzServerd
+        description="Selects a winner from the entries in the contest post"
     )
-    @app_commands.checks.has_any_role("Waltz Leadership (Flare)", "Waltz Leadership (Amplifier)")
+    @app_commands.checks.has_any_role(
+        "Waltz Leadership (Flare)", "Waltz Leadership (Amplifier)"
+    )
     @app_commands.describe(messageid="Message ID of the contest post")
-    async def starlightwinner(interaction: discord.Interaction, messageid: str):
+    async def contestwinner(self, interaction: discord.Interaction, messageid: str):
         await interaction.response.defer()
-        channel = rhelbot.get_channel(615421445635440660)
+        channel = self.get_channel(615421445635440660)
         message = await channel.fetch_message(int(messageid))
         contestants = set()
 
@@ -51,19 +54,23 @@ class WaltzCog(commands.Cog):
         winner = random.choice(people)
         await interaction.followup.send(f"{winner} has been selected as the winner!")
 
-    @app_commands.command(
-        description="Adds a donated item to the item list",
-        guild=waltzServer
+    @app_commands.command(description="Adds a donated item to the item list")
+    @app_commands.checks.has_any_role(
+        "Waltz Leadership (Flare)",
+        "Waltz Leadership (Amplifier)",
+        "moonmoonmoonmoonmoon",
     )
-    @app_commands.checks.has_any_role("Waltz Leadership (Flare)", "Waltz Leadership (Amplifier)",
-                                      "moonmoonmoonmoonmoon")
     @app_commands.describe(
         item="Item donated",
         member="Person who donated the item",
         quantity="(Optional) Number of items donated. Defaults to 1 if not provided",
     )
     async def donate(
-            interaction: discord.Interaction, quantity: Optional[int], item: str, member: str
+        self,
+        interaction: discord.Interaction,
+        quantity: Optional[int],
+        item: str,
+        member: str,
     ):
         await interaction.response.defer()
 
@@ -80,4 +87,7 @@ class WaltzCog(commands.Cog):
 
 
 async def setup(client) -> None:
-    await client.add_cog(WaltzCog(client), guild=waltzServer)
+    print(f"Entering Waltz cog setup\n")
+    await client.add_cog(WaltzCog(client))
+    await client.tree.sync(guild=waltzServer)
+    print("Waltz cog setup complete\n")
