@@ -106,7 +106,7 @@ class WaltzCog(commands.Cog):
         )
 
     @app_commands.command(
-        name="add birthday", description="Adds your birthday to the Waltz calendar"
+        name="add_birthday", description="Adds your birthday to the Waltz calendar"
     )
     @app_commands.describe(
         character_first="Your character's first name",
