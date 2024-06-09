@@ -13,9 +13,6 @@ handler.setFormatter(
 )
 rhelbot_logs.addHandler(handler)
 
-waltzServer = discord.Object(id=266039174333726725)
-donkeyServer = discord.Object(id=591625815528177690)
-
 intents = discord.Intents.default()
 intents.message_content = True
 rhelbot = commands.Bot(command_prefix="!rhel", intents=intents)
@@ -51,55 +48,6 @@ async def check_cogs(interaction: discord.Interaction, cog_name: str):
     else:
         await interaction.followup.send("Cog is unloaded", ephemeral=True)
         await rhelbot.unload_extension(f"cogs.{cog_name}")
-
-
-@rhelbot.tree.command(description="Kitty pls", guild=donkeyServer)
-async def kitty(interaction: discord.Interaction):
-    await interaction.response.send_message("<@&902282275360763965>")
-
-
-@rhelbot.tree.command(description="Right to jail", guild=donkeyServer)
-@commands.has_any_role("Rhelbot")
-async def theon(interaction: discord.Interaction):
-    guild = interaction.guild
-    member = guild.get_member(381620359230652421)
-    gulag = rhelbot.get_channel(922023425042681896)
-    try:
-        await member.move_to(gulag)
-        await interaction.response.send_message("Bye Theon")
-    except:
-        await interaction.response.send_message("Theon isn't here right now")
-        return
-
-
-@rhelbot.tree.command(description="Let the malding cease", guild=donkeyServer)
-@commands.has_any_role("i want a pretty color")
-async def cal(interaction: discord.Interaction):
-    guild = interaction.guild
-    member = guild.get_member(187413059315302401)
-    try:
-        await member.edit(mute=True)
-        await interaction.response.send_message(
-            "Shhhh... Its quiet now :)", ephemeral=True
-        )
-    except:
-        await interaction.response.send_message(
-            "Cal isn't here right now, it should already be quiet", ephemeral=True
-        )
-        return
-
-
-@rhelbot.tree.command(description="No", guild=donkeyServer)
-async def rhelys(interaction: discord.Interaction):
-    guild = interaction.guild
-    member = interaction.user
-    gulag = rhelbot.get_channel(922023425042681896)
-    try:
-        await member.move_to(gulag)
-        await interaction.response.send_message("No, fuck you. You go to gulag")
-    except:
-        await interaction.response.send_message("Nice try, but no")
-        return
 
 
 @rhelbot.event

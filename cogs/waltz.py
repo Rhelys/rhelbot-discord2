@@ -1,5 +1,3 @@
-import enum
-
 import discord
 import random
 from discord import app_commands
@@ -16,6 +14,7 @@ waltzServer = discord.Object(id=266039174333726725)
 class WaltzCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
+        super().__init__()
 
     def list_birthdays(self, filepath):
         current_birthdays = {}
