@@ -169,10 +169,17 @@ class ApCog(commands.GroupCog, group_name="ap"):
         self, interaction: discord.Interaction, apfile: Optional[discord.Attachment]
     ) -> None:
         await interaction.response.send_message(
-            "Attempting to start Archipelago server. This will " "take 2 minutes"
+            "Attempting to start Archipelago server. This will take 2 minutes"
         )
 
-        # Todo - add error handling for submitted file to make sure it's a zip file and includes a .archipelago file
+        # Clean up existing files - this is a port from the update command later in the file
+        def outputfiles():
+            return listdir(self.output_directory)
+
+        for file in outputfiles():
+            remove(f"{self.output_directory}/{file}")
+
+        # Todo - add error handling for submitted file to make sure it includes a .archipelago file
         if apfile:
             if apfile.filename.endswith(".zip"):
                 await apfile.save(f"{self.output_directory}/donkey.zip")
@@ -232,6 +239,9 @@ class ApCog(commands.GroupCog, group_name="ap"):
     """
 
     # Todo - add in a "safe" cleanup option to remove everything but what's running
+    # Todo - Disabling this for now and putting it into the startup function for ease of use.
+    # I'll come back to this once I have a need to run multiple servers at once
+    """
     @app_commands.command(
         name="cleanup",
         description="Cleans up the output and player files from the last game",
@@ -245,6 +255,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
 
         await interaction.response.send_message("File cleanup complete", ephemeral=True)
         # Todo - Store player files somewhere with the date of the game and remove them for next generation
+    """
 
     @app_commands.command(
         name="spoiler", description="Pulls the spoiler log from the current game"

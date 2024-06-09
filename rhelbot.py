@@ -6,7 +6,7 @@ import os
 
 # Setting up logs
 rhelbot_logs = logging.getLogger("discord")
-rhelbot_logs.setLevel(logging.INFO)
+rhelbot_logs.setLevel(logging.DEBUG)
 handler = logging.FileHandler(filename="log-rhelbot.log", encoding="utf-8", mode="w")
 handler.setFormatter(
     logging.Formatter("%(asctime)s:%(levelname)s:%(name)s: %(message)s")

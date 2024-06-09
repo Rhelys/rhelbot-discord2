@@ -105,20 +105,17 @@ class WaltzCog(commands.Cog):
             f"Recorded {quantity} {item}(s) donated by {member} for the Christmas giveaway\n"
         )
 
-    @app_commands.command(
-        name="add_birthday", description="Adds your birthday to the Waltz calendar"
-    )
+    @app_commands.command(description="Adds your birthday to the Waltz calendar")
+    @app_commands.checks.has_any_role("Waltz Member")
     @app_commands.describe(
-        character_first="Your character's first name",
-        character_last="Your character's last name",
+        character_name="Your character's full name",
         month="Month name as a word",
         day="Day as a number",
     )
-    async def add_birthday(
+    async def birthday(
         self,
         interaction: discord.Interaction,
-        character_first: str,
-        character_last: str,
+        character_name: str,
         month: Literal[
             "January",
             "February",
@@ -140,8 +137,6 @@ class WaltzCog(commands.Cog):
 
         birthday_file = f"G:/My Drive/birthdays/{month.lower()}.txt"
 
-        character = f"{character_first.capitalize()} {character_last.capitalize()}"
-
         # Validate the given date ahead of any computation
         year = datetime.now().year
         month_number = strptime(month, "%B").tm_mon
@@ -154,14 +149,13 @@ class WaltzCog(commands.Cog):
 
         submitted_birthdays = self.list_birthdays(birthday_file)
 
-        if character in submitted_birthdays:
+        if character_name.capitalize() in submitted_birthdays:
             await interaction.followup.send(
                 "This character is already in the list!", ephemeral=True
             )
         else:
             with open(birthday_file, "a+") as open_file:
-                capital_player = character.capitalize()
-                open_file.write(f"{capital_player}:{day}\n")
+                open_file.write(f"{character_name.capitalize()}:{day}\n")
             await interaction.followup.send(
                 "Birthday added to the list successfully!", ephemeral=True
             )
