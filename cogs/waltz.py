@@ -1,8 +1,13 @@
+import enum
+
 import discord
 import random
 from discord import app_commands
 from discord.ext import commands
 from typing import Optional
+from typing import Literal
+from datetime import datetime, date
+from time import strptime
 
 waltzServer = discord.Object(id=266039174333726725)
 
@@ -12,13 +17,28 @@ class WaltzCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
+    def list_birthdays(self, filepath):
+        current_birthdays = {}
+
+        with open(filepath, "a") as current_month:
+            for line in current_month:
+                (
+                    name,
+                    day,
+                ) = line.rstrip(
+                    "\n"
+                ).split(":")
+                current_birthdays[name.capitalize()] = day
+
+        return current_birthdays
+
     @app_commands.command(
         description="Displays the number of unique entries in the Starlight giveaway"
     )
     @app_commands.describe(messageid="Message ID of the contest post")
     async def contestcount(self, interaction: discord.Interaction, messageid: str):
         await interaction.response.defer()
-        channel = self.get_channel(615421445635440660)
+        channel = self.bot.get_channel(615421445635440660)
         message = await channel.fetch_message(int(messageid))
         contestants = set()
         reactionCount = 0
@@ -42,7 +62,7 @@ class WaltzCog(commands.Cog):
     @app_commands.describe(messageid="Message ID of the contest post")
     async def contestwinner(self, interaction: discord.Interaction, messageid: str):
         await interaction.response.defer()
-        channel = self.get_channel(615421445635440660)
+        channel = self.bot.get_channel(615421445635440660)
         message = await channel.fetch_message(int(messageid))
         contestants = set()
 
@@ -84,6 +104,67 @@ class WaltzCog(commands.Cog):
         await interaction.followup.send(
             f"Recorded {quantity} {item}(s) donated by {member} for the Christmas giveaway\n"
         )
+
+    @app_commands.command(
+        name="add birthday", description="Adds your birthday to the Waltz calendar"
+    )
+    @app_commands.describe(
+        character_first="Your character's first name",
+        character_last="Your character's last name",
+        month="Month name as a word",
+        day="Day as a number",
+    )
+    async def add_birthday(
+        self,
+        interaction: discord.Interaction,
+        character_first: str,
+        character_last: str,
+        month: Literal[
+            "January",
+            "February",
+            "March",
+            "April",
+            "May",
+            "June",
+            "July",
+            "August",
+            "September",
+            "October",
+            "November",
+            "December",
+        ],
+        day: int,
+    ):
+        await interaction.response.defer()
+        await interaction.followup.send("Checking the birthday list...", ephemeral=True)
+
+        birthday_file = f"G:/My Drive/birthdays/{month.lower()}.txt"
+
+        character = f"{character_first.capitalize()} {character_last.capitalize()}"
+
+        # Validate the given date ahead of any computation
+        year = datetime.now().year
+        month_number = strptime(month, "%B").tm_mon
+        try:
+            date(year, month_number, day)
+        except ValueError:
+            interaction.followup.send(
+                "Date submitted is invalid, try resubmitting", ephemeral=True
+            )
+
+        submitted_birthdays = self.list_birthdays(birthday_file)
+
+        if character in submitted_birthdays:
+            await interaction.followup.send(
+                "This character is already in the list!", ephemeral=True
+            )
+        else:
+            with open(birthday_file, "a+") as open_file:
+                capital_player = character.capitalize()
+                open_file.write(f"{capital_player}:{day}\n")
+            await interaction.followup.send(
+                "Birthday added to the list successfully!", ephemeral=True
+            )
 
 
 async def setup(client) -> None:
