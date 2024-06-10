@@ -17,6 +17,9 @@ intents = discord.Intents.default()
 intents.message_content = True
 rhelbot = commands.Bot(command_prefix="!rhel", intents=intents)
 
+waltzServer = discord.Object(id=266039174333726725)
+testServer = discord.Object(id=1228942380518998137)
+
 
 @rhelbot.tree.command(
     description="Reloads/updates bot commands without having to restart the entire bot process"
@@ -59,6 +62,20 @@ async def setup_hook():
     await rhelbot.tree.sync()
     for guild in rhelbot.guilds:
         await rhelbot.tree.sync(guild=guild)
+
+
+@rhelbot.event
+async def on_message(message):
+    message_text = message.content
+    send_channel = message.channel
+    if message.guild.name == "Waltz Support Server" and not message.author.bot:
+        if message.channel.name == "sandbox":
+            await send_channel.send(f"Received message: {message_text}")
+            if "test" in message_text:
+                await message.delete()
+                await send_channel.send("Message included a banned word")
+
+    await rhelbot.process_commands(message)
 
 
 @rhelbot.event

@@ -6,8 +6,6 @@ import subprocess
 from asyncio import sleep
 import zipfile
 from typing import Optional
-
-# import yaml
 from ruyaml import YAML
 
 donkeyServer = discord.Object(id=591625815528177690)

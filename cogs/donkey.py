@@ -9,7 +9,7 @@ donkeyServer = discord.Object(id=591625815528177690)
 
 @app_commands.guilds(donkeyServer)
 class DonkeyCog(commands.Cog):
-    def __init__(self, bot):
+    def __init__(self, bot: commands.Bot):
         self.bot = bot
         super().__init__()
 

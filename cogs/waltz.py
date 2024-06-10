@@ -10,9 +10,9 @@ from time import strptime
 waltzServer = discord.Object(id=266039174333726725)
 
 
-@app_commands.guilds(waltzServer)
+@app_commands.guilds(266039174333726725)
 class WaltzCog(commands.Cog):
-    def __init__(self, bot):
+    def __init__(self, bot: commands.Bot):
         self.bot = bot
         super().__init__()
 
