@@ -65,20 +65,6 @@ async def setup_hook():
 
 
 @rhelbot.event
-async def on_message(message):
-    message_text = message.content
-    send_channel = message.channel
-    if message.guild.name == "Waltz Support Server" and not message.author.bot:
-        if message.channel.name == "sandbox":
-            await send_channel.send(f"Received message: {message_text}")
-            if "test" in message_text:
-                await message.delete()
-                await send_channel.send("Message included a banned word")
-
-    await rhelbot.process_commands(message)
-
-
-@rhelbot.event
 async def on_ready():
     print(f"Rhelbot has connected to Discord!\n\n")
     print(f"{rhelbot.user} is connected to the following Discord servers:\n")

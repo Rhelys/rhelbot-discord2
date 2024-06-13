@@ -365,8 +365,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
         )
 
 
-async def setup(client) -> None:
+async def setup(bot) -> None:
     print(f"Entering AP cog setup\n")
-    await client.add_cog(ApCog(client))
-    await client.tree.sync(guild=donkeyServer)
+    await bot.add_cog(ApCog(bot=bot))
     print("AP cog setup complete\n")

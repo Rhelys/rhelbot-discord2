@@ -1,5 +1,4 @@
 import discord
-import random
 from discord import app_commands
 from discord.ext import commands
 from typing import Optional
@@ -14,11 +13,13 @@ class DonkeyCog(commands.Cog):
         super().__init__()
 
     @app_commands.command(description="Kitty pls")
+    @app_commands.guilds(donkeyServer)
     async def kitty(self, interaction: discord.Interaction):
         await interaction.response.send_message("<@&902282275360763965>")
 
     @app_commands.command(description="Right to jail")
     @commands.has_any_role("Rhelbot")
+    @app_commands.guilds(donkeyServer)
     async def theon(self, interaction: discord.Interaction):
         member = interaction.guild.get_member(381620359230652421)
         gulag = interaction.guild.get_channel(922023425042681896)
@@ -31,6 +32,7 @@ class DonkeyCog(commands.Cog):
 
     @app_commands.command(description="Let the malding cease")
     @commands.has_any_role("i want a pretty color")
+    @app_commands.guilds(donkeyServer)
     async def cal(self, interaction: discord.Interaction):
         member = interaction.guild.get_member(187413059315302401)
         try:
@@ -45,6 +47,7 @@ class DonkeyCog(commands.Cog):
             return
 
     @app_commands.command(description="No")
+    @app_commands.guilds(donkeyServer)
     async def rhelys(self, interaction: discord.Interaction):
         member = interaction.user
         gulag = interaction.guild.get_channel(922023425042681896)
@@ -56,8 +59,7 @@ class DonkeyCog(commands.Cog):
             return
 
 
-async def setup(client) -> None:
+async def setup(bot) -> None:
     print(f"Entering Donkey cog setup\n")
-    await client.add_cog(DonkeyCog(client))
-    await client.tree.sync(guild=donkeyServer)
+    await bot.add_cog(DonkeyCog(bot=bot))
     print("Donkey cog setup complete\n")

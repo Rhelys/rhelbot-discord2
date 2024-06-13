@@ -1,6 +1,6 @@
 import discord
 import random
-from discord import app_commands
+from discord import app_commands, Guild
 from discord.ext import commands
 from typing import Optional
 from typing import Literal
@@ -10,7 +10,7 @@ from time import strptime
 waltzServer = discord.Object(id=266039174333726725)
 
 
-@app_commands.guilds(266039174333726725)
+@app_commands.guilds(waltzServer)
 class WaltzCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -31,10 +31,34 @@ class WaltzCog(commands.Cog):
 
         return current_birthdays
 
+    def leadership_check(self, ctx):
+        if (
+            "Waltz Leadership (Flare)"
+            or "Waltz Leadership (Amplifier)" in ctx.member.roles
+        ):
+            return True
+        else:
+            return False
+
+    @commands.Cog.listener()
+    @app_commands.guilds(waltzServer)
+    async def on_message(self, message):
+        message_text = message.content
+        send_channel = message.channel
+        if message.guild.name == "Waltz Support Server" and not message.author.bot:
+            if message.channel.name == "sandbox":
+                await send_channel.send(f"Received message: {message_text}")
+                if "test" in message_text:
+                    await message.delete()
+                    await send_channel.send("Message included a banned word")
+
+        await self.bot.process_commands(message)
+
     @app_commands.command(
         description="Displays the number of unique entries in the Starlight giveaway"
     )
     @app_commands.describe(messageid="Message ID of the contest post")
+    @app_commands.guilds(waltzServer)
     async def contestcount(self, interaction: discord.Interaction, messageid: str):
         await interaction.response.defer()
         channel = self.bot.get_channel(615421445635440660)
@@ -59,6 +83,7 @@ class WaltzCog(commands.Cog):
         "Waltz Leadership (Flare)", "Waltz Leadership (Amplifier)"
     )
     @app_commands.describe(messageid="Message ID of the contest post")
+    @app_commands.guilds(waltzServer)
     async def contestwinner(self, interaction: discord.Interaction, messageid: str):
         await interaction.response.defer()
         channel = self.bot.get_channel(615421445635440660)
@@ -66,12 +91,22 @@ class WaltzCog(commands.Cog):
         contestants = set()
 
         for reaction in message.reactions:
-            async for user in reaction.users():
-                contestants.add(user.mention)
+            async for member in reaction.users():
+                contestants.add(member)
+
+        # Test for the FC role
 
         people = list(contestants)
+
         winner = random.choice(people)
-        await interaction.followup.send(f"{winner} has been selected as the winner!")
+
+        while "Waltz Member" not in winner.roles:
+            print(f"{winner.nick} does not have the right role, retrying")
+            winner = random.choice(people)
+
+        await interaction.followup.send(
+            f"{winner.mention} has been selected as the winner!"
+        )
 
     @app_commands.command(description="Adds a donated item to the item list")
     @app_commands.checks.has_any_role(
@@ -84,6 +119,7 @@ class WaltzCog(commands.Cog):
         member="Person who donated the item",
         quantity="(Optional) Number of items donated. Defaults to 1 if not provided",
     )
+    @app_commands.guilds(waltzServer)
     async def donate(
         self,
         interaction: discord.Interaction,
@@ -111,6 +147,7 @@ class WaltzCog(commands.Cog):
         month="Month name as a word",
         day="Day as a number",
     )
+    @app_commands.guilds(waltzServer)
     async def birthday(
         self,
         interaction: discord.Interaction,
@@ -160,8 +197,7 @@ class WaltzCog(commands.Cog):
             )
 
 
-async def setup(client) -> None:
+async def setup(bot) -> None:
     print(f"Entering Waltz cog setup\n")
-    await client.add_cog(WaltzCog(client))
-    await client.tree.sync(guild=waltzServer)
+    await bot.add_cog(WaltzCog(bot=bot))
     print("Waltz cog setup complete\n")
