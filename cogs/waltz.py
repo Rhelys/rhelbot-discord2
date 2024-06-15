@@ -1,9 +1,8 @@
 import discord
 import random
-from discord import app_commands, Guild
+from discord import app_commands, Guild, utils
 from discord.ext import commands
-from typing import Optional
-from typing import Literal
+from typing import Optional, Literal, Union
 from datetime import datetime, date
 from time import strptime
 
@@ -31,22 +30,13 @@ class WaltzCog(commands.Cog):
 
         return current_birthdays
 
-    def leadership_check(self, ctx):
-        if (
-            "Waltz Leadership (Flare)"
-            or "Waltz Leadership (Amplifier)" in ctx.member.roles
-        ):
-            return True
-        else:
-            return False
-
     @commands.Cog.listener()
     @app_commands.guilds(waltzServer)
     async def on_message(self, message):
         message_text = message.content
         send_channel = message.channel
-        if message.guild.name == "Waltz Support Server" and not message.author.bot:
-            if message.channel.name == "sandbox":
+        if not message.author.bot:
+            if message.channel.name == "bot-development":
                 await send_channel.send(f"Received message: {message_text}")
                 if "test" in message_text:
                     await message.delete()
@@ -55,7 +45,7 @@ class WaltzCog(commands.Cog):
         await self.bot.process_commands(message)
 
     @app_commands.command(
-        description="Displays the number of unique entries in the Starlight giveaway"
+        description="Displays the number of unique entries in the current giveaway post"
     )
     @app_commands.describe(messageid="Message ID of the contest post")
     @app_commands.guilds(waltzServer)
@@ -86,13 +76,14 @@ class WaltzCog(commands.Cog):
     @app_commands.guilds(waltzServer)
     async def contestwinner(self, interaction: discord.Interaction, messageid: str):
         await interaction.response.defer()
+        role = discord.utils.get(interaction.guild.roles, name="Waltz Member")
         channel = self.bot.get_channel(615421445635440660)
         message = await channel.fetch_message(int(messageid))
         contestants = set()
 
         for reaction in message.reactions:
-            async for member in reaction.users():
-                contestants.add(member)
+            async for user in reaction.users():
+                contestants.add(user)
 
         # Test for the FC role
 
@@ -100,7 +91,7 @@ class WaltzCog(commands.Cog):
 
         winner = random.choice(people)
 
-        while "Waltz Member" not in winner.roles:
+        while role not in winner.roles:
             print(f"{winner.nick} does not have the right role, retrying")
             winner = random.choice(people)
 

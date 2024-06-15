@@ -15,6 +15,7 @@ rhelbot_logs.addHandler(handler)
 
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True
 rhelbot = commands.Bot(command_prefix="!rhel", intents=intents)
 
 waltzServer = discord.Object(id=266039174333726725)
