@@ -1,7 +1,6 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
-from typing import Optional
 
 donkeyServer = discord.Object(id=591625815528177690)
 

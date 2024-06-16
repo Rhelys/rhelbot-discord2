@@ -1,7 +1,7 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
-from os import remove, listdir, close, rename, path
+from os import remove, listdir, rename, path
 import subprocess
 from asyncio import sleep
 import zipfile

@@ -1,18 +1,42 @@
 import discord
 import random
-from discord import app_commands, Guild, utils
+from discord import app_commands, Guild
 from discord.ext import commands
-from typing import Optional, Literal, Union
+from typing import Optional, Literal
 from datetime import datetime, date
 from time import strptime
 
 waltzServer = discord.Object(id=266039174333726725)
+"""
+monitored_channels = [
+    "general",
+    "thank-yous",
+    "vc-text",
+    "character-lore",
+    "battle-content",
+    "crafting&voyage",
+    "chat&lfg/lfm",
+    "bot-development",
+]
+"""
+monitored_channels = ["bot-development"]
+
+
+def spoiler_list():
+    current_list = []
+    with open("spoilers.txt", "r") as spoiler_file:
+        for line in spoiler_file:
+            entry = line.rstrip("\n")
+            current_list += entry
+            print(entry)
+    return current_list
 
 
 @app_commands.guilds(waltzServer)
 class WaltzCog(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self.spoiler_list = spoiler_list()
         super().__init__()
 
     def list_birthdays(self, filepath):
@@ -30,17 +54,20 @@ class WaltzCog(commands.Cog):
 
         return current_birthdays
 
+    # Spoiler handling for Dawntrail
     @commands.Cog.listener()
     @app_commands.guilds(waltzServer)
     async def on_message(self, message):
         message_text = message.content
         send_channel = message.channel
         if not message.author.bot:
-            if message.channel.name == "bot-development":
+            if message.channel.name in monitored_channels:
                 await send_channel.send(f"Received message: {message_text}")
-                if "test" in message_text:
-                    await message.delete()
-                    await send_channel.send("Message included a banned word")
+                for item in self.spoiler_list:
+                    if item in message_text:
+                        await message.delete()
+                        await send_channel.send("Message included a banned word")
+                        return
 
         await self.bot.process_commands(message)
 
@@ -72,26 +99,23 @@ class WaltzCog(commands.Cog):
     @app_commands.checks.has_any_role(
         "Waltz Leadership (Flare)", "Waltz Leadership (Amplifier)"
     )
-    @app_commands.describe(messageid="Message ID of the contest post")
+    @app_commands.describe(post="Message ID of the contest post")
     @app_commands.guilds(waltzServer)
-    async def contestwinner(self, interaction: discord.Interaction, messageid: str):
+    async def contestwinner(self, interaction: discord.Interaction, post: str):
         await interaction.response.defer()
-        role = discord.utils.get(interaction.guild.roles, name="Waltz Member")
+        member_role = interaction.guild.get_role(822297963119902730)
         channel = self.bot.get_channel(615421445635440660)
-        message = await channel.fetch_message(int(messageid))
+        message = await channel.fetch_message(int(post))
         contestants = set()
 
         for reaction in message.reactions:
             async for user in reaction.users():
                 contestants.add(user)
 
-        # Test for the FC role
-
         people = list(contestants)
-
         winner = random.choice(people)
 
-        while role not in winner.roles:
+        while member_role not in winner.roles:
             print(f"{winner.nick} does not have the right role, retrying")
             winner = random.choice(people)
 
@@ -101,9 +125,7 @@ class WaltzCog(commands.Cog):
 
     @app_commands.command(description="Adds a donated item to the item list")
     @app_commands.checks.has_any_role(
-        "Waltz Leadership (Flare)",
-        "Waltz Leadership (Amplifier)",
-        "moonmoonmoonmoonmoon",
+        "Waltz Leadership (Flare)", "Waltz Leadership (Amplifier)"
     )
     @app_commands.describe(
         item="Item donated",
@@ -122,10 +144,10 @@ class WaltzCog(commands.Cog):
 
         quantity = quantity or 1
 
-        itemfile = open("G:/My Drive/waltz_xmas_2023_donations.txt", "a")
-        itemfile.write(f"{item},{member},{quantity}")
-        itemfile.write("\n")
-        itemfile.close()
+        item_file = open("G:/My Drive/waltz_xmas_2023_donations.txt", "a")
+        item_file.write(f"{item},{member},{quantity}")
+        item_file.write("\n")
+        item_file.close()
 
         await interaction.followup.send(
             f"Recorded {quantity} {item}(s) donated by {member} for the Christmas giveaway\n"
