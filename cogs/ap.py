@@ -69,93 +69,209 @@ class ApCog(commands.GroupCog, group_name="ap"):
             return
 
         websocket = None
-        try:
-            # Connect to the Archipelago websocket server
-            websocket = await websockets.connect(server_url)
-            
-            # Update the connection tracking with the websocket
-            if server_url in self.active_connections:
-                self.active_connections[server_url]["websocket"] = websocket
-            
-            # Send connection message - based on working bridgeipelago example
-            import uuid
-            connect_msg = {
-                "cmd": "Connect",
-                "game": "",
-                "password": password,
-                "name": "RhelBot_Tracker",
-                "version": {"major": 0, "minor": 6, "build": 0, "class": "Version"},
-                "tags": ["Tracker"],
-                "items_handling": 0b000,  # No items handling for tracker
-                "uuid": uuid.getnode()
-            }
-            await websocket.send(json.dumps([connect_msg]))
-            
-            # Wait for connection confirmation
-            connection_confirmed = False
-            timeout_counter = 0
-            
-            # Listen for messages
+        reconnect_attempts = 0
+        max_reconnect_attempts = 5
+        base_delay = 2  # Base delay in seconds
+        max_delay = 60  # Maximum delay in seconds
+        
+        while reconnect_attempts <= max_reconnect_attempts:
             try:
-                async for message in websocket:
-                    try:
-                        data = json.loads(message)
-                        
-                        # Process different message types
-                        for msg in data:
-                            msg_cmd = msg.get("cmd", "")
-                            
-                            # Handle connection confirmation
-                            if msg_cmd == "Connected" and not connection_confirmed:
-                                connection_confirmed = True
-                                await channel.send(f"🔗 Successfully connected to Archipelago server: {server_url}")
-                                
-                                # Request the DataPackage to get game data for lookups
-                                get_data_msg = {"cmd": "GetDataPackage"}
-                                await websocket.send(json.dumps([get_data_msg]))
-                                print("Requested DataPackage from server")
-                                
-                            # Handle connection rejection
-                            elif msg_cmd == "ConnectionRefused":
-                                reason = msg.get("errors", ["Unknown error"])
-                                await channel.send(f"❌ Connection refused: {', '.join(reason)}")
-                                return
-                                
-                            # Process all messages
-                            await self.process_ap_message(msg, channel)
-                            
-                    except json.JSONDecodeError:
-                        print(f"Failed to decode message: {message}")
-                    except Exception as e:
-                        print(f"Error processing message: {e}")
-                        # Don't break the loop on processing errors
-                        continue
-                        
-            except websockets.exceptions.ConnectionClosed:
-                print("Websocket connection closed normally")
-                await channel.send(f"❌ Connection to {server_url} was closed")
-            except Exception as e:
-                print(f"Error in websocket message loop: {e}")
-                await channel.send(f"❌ Error in websocket loop: {str(e)}")
-                    
-        except websockets.exceptions.ConnectionClosed:
-            await channel.send(f"❌ Connection to {server_url} was closed")
-        except websockets.exceptions.InvalidURI:
-            await channel.send(f"❌ Invalid server URL: {server_url}")
-        except Exception as e:
-            await channel.send(f"❌ Error connecting to {server_url}: {str(e)}")
-            print(f"Websocket error details: {e}")
-        finally:
-            # Clean up websocket connection
-            if websocket:
+                if reconnect_attempts > 0:
+                    # Calculate exponential backoff delay
+                    delay = min(base_delay * (2 ** (reconnect_attempts - 1)), max_delay)
+                    await channel.send(f"⚠️ Connection lost to {server_url}, reconnecting in {delay} seconds... (attempt {reconnect_attempts}/{max_reconnect_attempts})")
+                    print(f"Waiting {delay} seconds before reconnect attempt {reconnect_attempts}")
+                    await asyncio.sleep(delay)
+                
+                print(f"Attempting to connect to {server_url} (attempt {reconnect_attempts + 1})")
+                
+                # Connect to the Archipelago websocket server with proper compression support
+                websocket = await asyncio.wait_for(
+                    websockets.connect(
+                        server_url, 
+                        ping_interval=20,  # Ping every 20 seconds
+                        ping_timeout=10,   # Wait 10 seconds for pong
+                        close_timeout=10,  # Wait 10 seconds for close
+                        max_size=None,     # No message size limit
+                        compression="deflate"  # Enable compression as expected by Archipelago
+                    ),
+                    timeout=15.0
+                )
+                
+                print(f"Successfully connected to {server_url}")
+                
+                # Update the connection tracking with the websocket
+                if server_url in self.active_connections:
+                    self.active_connections[server_url]["websocket"] = websocket
+                
+                # Send connection message - based on working bridgeipelago example
+                import uuid
+                connect_msg = {
+                    "cmd": "Connect",
+                    "game": "",
+                    "password": password,
+                    "name": "Rhelbot",
+                    "version": {"major": 0, "minor": 6, "build": 0, "class": "Version"},
+                    "tags": ["Tracker"],
+                    "items_handling": 0b000,  # No items handling for tracker
+                    "uuid": uuid.getnode()
+                }
+                await websocket.send(json.dumps([connect_msg]))
+                print("Sent connection message")
+                
+                # Reset reconnect attempts on successful connection and message exchange
+                connection_confirmed = False
+                connection_stable = False
+                stable_message_count = 0
+                
+                # Listen for messages indefinitely
                 try:
-                    await websocket.close()
-                except:
-                    pass
-            
-            # Clean up connection tracking
-            if server_url in self.active_connections:
-                del self.active_connections[server_url]
+                    while True:
+                        try:
+                            # Wait for message with longer timeout for initial connection
+                            timeout = 30.0 if not connection_confirmed else 120.0
+                            message = await asyncio.wait_for(websocket.recv(), timeout=timeout)
+                            
+                            try:
+                                data = json.loads(message)
+                                print(f"Received message: {data}")
+                                
+                                # Process different message types
+                                for msg in data:
+                                    msg_cmd = msg.get("cmd", "")
+                                    
+                                    # Handle connection confirmation
+                                    if msg_cmd == "Connected" and not connection_confirmed:
+                                        connection_confirmed = True
+                                        await channel.send(f"🔗 Successfully connected to Archipelago server: {server_url}")
+                                        
+                                        # Store connection data for player lookups
+                                        server_key = f"connection_{len(self.connection_data)}"
+                                        self.connection_data[server_key] = msg
+                                        print(f"Stored connection data: {msg.get('slot_info', {})}")
+                                        
+                                        # Request DataPackage but only for games that are actually being played
+                                        # This reduces the size compared to requesting all games
+                                        slot_info = msg.get("slot_info", {})
+                                        games_in_use = list(set(player_info.get("game", "") for player_info in slot_info.values()))
+                                        games_in_use = [game for game in games_in_use if game]  # Remove empty strings
+                                        
+                                        if games_in_use:
+                                            get_data_msg = {"cmd": "GetDataPackage", "games": games_in_use}
+                                            print(f"Requesting DataPackage for games: {games_in_use}")
+                                        else:
+                                            # Fallback to requesting all games if we can't determine which ones are in use
+                                            get_data_msg = {"cmd": "GetDataPackage"}
+                                            print("Requesting full DataPackage (couldn't determine games in use)")
+                                        
+                                        await websocket.send(json.dumps([get_data_msg]))
+                                        
+                                    # Handle connection rejection
+                                    elif msg_cmd == "ConnectionRefused":
+                                        reason = msg.get("errors", ["Unknown error"])
+                                        await channel.send(f"❌ Connection refused: {', '.join(reason)}")
+                                        return
+                                        
+                                    # Process all messages
+                                    try:
+                                        await self.process_ap_message(msg, channel)
+                                        
+                                        # Count stable messages to reset reconnect counter
+                                        if connection_confirmed:
+                                            stable_message_count += 1
+                                            if stable_message_count >= 5 and not connection_stable:
+                                                connection_stable = True
+                                                reconnect_attempts = 0  # Reset on stable connection
+                                                print(f"Connection to {server_url} is stable, reset reconnect counter")
+                                                
+                                    except Exception as msg_error:
+                                        print(f"Error processing individual message: {msg_error}")
+                                        # Continue processing other messages
+                                        continue
+                                        
+                            except json.JSONDecodeError as json_error:
+                                print(f"Failed to decode message: {message} - Error: {json_error}")
+                                continue
+                                
+                        except asyncio.TimeoutError:
+                            if not connection_confirmed:
+                                print("Connection timeout during initial handshake")
+                                raise websockets.exceptions.ConnectionClosed(None, None)
+                            else:
+                                print("No message received in 120 seconds, checking connection...")
+                                # Send a ping to check if connection is still alive
+                                try:
+                                    pong = await websocket.ping()
+                                    await asyncio.wait_for(pong, timeout=10.0)
+                                    print("Connection is still alive")
+                                    continue
+                                except Exception as ping_error:
+                                    print(f"Ping failed: {ping_error}")
+                                    raise websockets.exceptions.ConnectionClosed(None, None)
+                                
+                        except websockets.exceptions.ConnectionClosed as conn_closed:
+                            print(f"Websocket connection closed: {conn_closed}")
+                            raise conn_closed
+                            
+                        except Exception as loop_error:
+                            print(f"Unexpected error in message loop: {loop_error}")
+                            # For unexpected errors, try to continue but increment reconnect counter
+                            if not connection_stable:
+                                raise loop_error
+                            continue
+                            
+                except (websockets.exceptions.ConnectionClosed, Exception) as conn_error:
+                    print(f"Connection error: {conn_error}")
+                    
+                    # If we haven't established a stable connection, increment reconnect attempts
+                    if not connection_stable:
+                        reconnect_attempts += 1
+                    else:
+                        # If connection was stable, reset counter and try again
+                        reconnect_attempts = 1
+                        connection_stable = False
+                    
+                    if reconnect_attempts <= max_reconnect_attempts:
+                        continue  # Try to reconnect
+                    else:
+                        await channel.send(f"❌ Connection to {server_url} failed after {max_reconnect_attempts} attempts")
+                        break
+                        
+            except asyncio.TimeoutError:
+                print(f"Connection timeout to {server_url}")
+                reconnect_attempts += 1
+                if reconnect_attempts <= max_reconnect_attempts:
+                    continue
+                else:
+                    await channel.send(f"❌ Connection timeout to {server_url} after {max_reconnect_attempts} attempts")
+                    break
+                    
+            except websockets.exceptions.InvalidURI:
+                await channel.send(f"❌ Invalid server URL: {server_url}")
+                break
+                
+            except Exception as connect_error:
+                print(f"Error connecting to {server_url}: {connect_error}")
+                reconnect_attempts += 1
+                if reconnect_attempts <= max_reconnect_attempts:
+                    continue
+                else:
+                    await channel.send(f"❌ Error connecting to {server_url}: {str(connect_error)}")
+                    break
+                    
+            finally:
+                # Clean up websocket connection for this attempt
+                if websocket:
+                    try:
+                        await websocket.close()
+                    except Exception as close_error:
+                        print(f"Error closing websocket: {close_error}")
+                    websocket = None
+        
+        # Final cleanup
+        print(f"Websocket listener for {server_url} is exiting")
+        if server_url in self.active_connections:
+            del self.active_connections[server_url]
 
     def lookup_item_name(self, game: str, item_id: int) -> str:
         """Look up item name from ID using game data"""
