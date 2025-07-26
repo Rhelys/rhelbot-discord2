@@ -29,6 +29,9 @@ class ApCog(commands.GroupCog, group_name="ap"):
         self.game_data: Dict[str, Dict] = {}  # game_name -> {item_name_to_id, location_name_to_id}
         self.connection_data: Dict[str, Dict] = {}  # server_url -> {slot_info, etc}
         
+        # Progress tracking for each player
+        self.player_progress: Dict[int, set] = {}  # player_id -> set of checked location_ids
+        
         # Server process tracking
         self.server_process = None
 
@@ -423,6 +426,19 @@ class ApCog(commands.GroupCog, group_name="ap"):
                             item_flags = item.get("flags", 0)
                         elif item.get("type") == "location_id":
                             location_id = item.get("text")
+                    
+                    # Track location check for progress tracking
+                    if sender_id and location_id:
+                        sender_id_int = int(sender_id)
+                        location_id_int = int(location_id)
+                        
+                        # Initialize player progress if not exists
+                        if sender_id_int not in self.player_progress:
+                            self.player_progress[sender_id_int] = set()
+                        
+                        # Add this location to the player's checked locations
+                        self.player_progress[sender_id_int].add(location_id_int)
+                        print(f"Tracked location check: Player {sender_id_int} checked location {location_id_int}")
                     
                     # Only send messages for progression (1) and useful (2) items
                     if item_flags in [1, 2]:
@@ -1152,6 +1168,227 @@ class ApCog(commands.GroupCog, group_name="ap"):
             await interaction.edit_original_response(
                 content=f"❌ Failed to restart server: {str(e)}"
             )
+
+    @app_commands.command(
+        name="progress",
+        description="Shows location check progress for all players in the current game",
+    )
+    async def ap_progress(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        
+        # Check if we have connection data (players)
+        if not self.connection_data:
+            await interaction.followup.send("❌ No active game connection found. Use `/ap track` to connect to a server first.")
+            return
+        
+        # Check if we have game data (location information)
+        if not self.game_data:
+            await interaction.followup.send("❌ No game data available. Make sure the bot is connected to an active Archipelago server.")
+            return
+        
+        # Try to load progress from .apsave file
+        save_data = self.load_apsave_data()
+        if not save_data:
+            await interaction.followup.send("❌ Could not load save data. Make sure the Archipelago server is running and has a save file.")
+            return
+        
+        progress_lines = []
+        progress_lines.append("📊 **Player Progress Report**\n")
+        
+        # Get all players from connection data
+        all_players = {}
+        for server_key, conn_data in self.connection_data.items():
+            slot_info = conn_data.get("slot_info", {})
+            for slot_id, player_info in slot_info.items():
+                player_id = int(slot_id)
+                all_players[player_id] = {
+                    "name": player_info.get("name", f"Player {player_id}"),
+                    "game": player_info.get("game", "Unknown")
+                }
+        
+        if not all_players:
+            await interaction.followup.send("❌ No players found in the current game.")
+            return
+        
+        # Get location checks from save data
+        location_checks = save_data.get("location_checks", {})
+        
+        # Calculate progress for each player
+        for player_id, player_info in all_players.items():
+            player_name = player_info["name"]
+            player_game = player_info["game"]
+            
+            # Get checked locations for this player from save data
+            # location_checks format: {(team, slot): set of location_ids}
+            checked_locations = location_checks.get((0, player_id), set())  # Assuming team 0
+            checked_count = len(checked_locations)
+            
+            # Get total locations for this player's game
+            total_locations = 0
+            if player_game in self.game_data:
+                game_data = self.game_data[player_game]
+                location_mapping = game_data.get("location_name_to_id", {})
+                total_locations = len(location_mapping)
+            
+            # Calculate percentage
+            if total_locations > 0:
+                percentage = (checked_count / total_locations) * 100
+                progress_bar = self.create_progress_bar(percentage)
+                progress_lines.append(
+                    f"**{player_name}** ({player_game})\n"
+                    f"└ {checked_count}/{total_locations} locations ({percentage:.1f}%)\n"
+                    f"└ {progress_bar}\n"
+                )
+            else:
+                progress_lines.append(
+                    f"**{player_name}** ({player_game})\n"
+                    f"└ {checked_count}/? locations (No location data available)\n"
+                )
+        
+        # Send the progress report
+        progress_message = "\n".join(progress_lines)
+        
+        # Split message if it's too long for Discord
+        if len(progress_message) > 2000:
+            # Send in chunks
+            chunks = []
+            current_chunk = "📊 **Player Progress Report**\n\n"
+            
+            for line in progress_lines[1:]:  # Skip the header since we added it to current_chunk
+                if len(current_chunk + line) > 1900:  # Leave some buffer
+                    chunks.append(current_chunk)
+                    current_chunk = line
+                else:
+                    current_chunk += line
+            
+            if current_chunk:
+                chunks.append(current_chunk)
+            
+            for i, chunk in enumerate(chunks):
+                if i == 0:
+                    await interaction.followup.send(chunk)
+                else:
+                    await interaction.channel.send(chunk)
+        else:
+            await interaction.followup.send(progress_message)
+    
+    def load_apsave_data(self):
+        """Load and parse the .apsave file to get current game state"""
+        import pickle
+        import zlib
+        import sys
+        from pathlib import Path
+        
+        # Look for .apsave files in the output directory
+        output_path = Path(self.output_directory)
+        apsave_files = list(output_path.glob("*.apsave"))
+        
+        if not apsave_files:
+            print("No .apsave files found in output directory")
+            return None
+        
+        # Use the most recent .apsave file
+        apsave_file = max(apsave_files, key=lambda f: f.stat().st_mtime)
+        
+        try:
+            # Add the Archipelago directory to Python path temporarily
+            archipelago_path = str(Path(self.ap_directory).resolve())
+            if archipelago_path not in sys.path:
+                sys.path.insert(0, archipelago_path)
+            
+            try:
+                with open(apsave_file, 'rb') as f:
+                    compressed_data = f.read()
+                
+                # Decompress and unpickle the save data
+                decompressed_data = zlib.decompress(compressed_data)
+                save_data = pickle.loads(decompressed_data)
+                
+                print(f"Successfully loaded save data from {apsave_file}")
+                return save_data
+                
+            finally:
+                # Remove the Archipelago path from sys.path
+                if archipelago_path in sys.path:
+                    sys.path.remove(archipelago_path)
+            
+        except Exception as e:
+            print(f"Error loading .apsave file {apsave_file}: {e}")
+            
+            # Try alternative approach: parse the raw data structure
+            try:
+                return self.parse_apsave_alternative(apsave_file)
+            except Exception as alt_e:
+                print(f"Alternative parsing also failed: {alt_e}")
+                return None
+    
+    def parse_apsave_alternative(self, apsave_file):
+        """Alternative method to parse .apsave file without full Archipelago dependencies"""
+        import pickle
+        import zlib
+        from pathlib import Path
+        
+        # Create a custom unpickler that can handle missing modules
+        class SafeUnpickler(pickle.Unpickler):
+            def find_class(self, module, name):
+                # Handle NetUtils classes by creating simple replacements
+                if module == 'NetUtils':
+                    if name == 'NetworkItem':
+                        # Create a simple class to hold NetworkItem data
+                        class NetworkItem:
+                            def __init__(self, item, location, player, flags=0):
+                                self.item = item
+                                self.location = location
+                                self.player = player
+                                self.flags = flags
+                        return NetworkItem
+                    elif name == 'Hint':
+                        # Create a simple class to hold Hint data
+                        class Hint:
+                            def __init__(self, *args, **kwargs):
+                                pass
+                        return Hint
+                    else:
+                        # For other NetUtils classes, create a generic placeholder
+                        class GenericNetUtilsClass:
+                            def __init__(self, *args, **kwargs):
+                                pass
+                        return GenericNetUtilsClass
+                
+                # For other missing modules, try to import normally
+                try:
+                    return super().find_class(module, name)
+                except (ImportError, AttributeError):
+                    # If we can't import it, create a generic placeholder
+                    class GenericClass:
+                        def __init__(self, *args, **kwargs):
+                            pass
+                    return GenericClass
+        
+        try:
+            with open(apsave_file, 'rb') as f:
+                compressed_data = f.read()
+            
+            # Decompress the data
+            decompressed_data = zlib.decompress(compressed_data)
+            
+            # Use our custom unpickler
+            import io
+            unpickler = SafeUnpickler(io.BytesIO(decompressed_data))
+            save_data = unpickler.load()
+            
+            print(f"Successfully loaded save data using alternative method from {apsave_file}")
+            return save_data
+            
+        except Exception as e:
+            print(f"Alternative parsing failed: {e}")
+            raise e
+    
+    def create_progress_bar(self, percentage: float, length: int = 20) -> str:
+        """Create a visual progress bar"""
+        filled_length = int(length * percentage / 100)
+        bar = "█" * filled_length + "░" * (length - filled_length)
+        return f"[{bar}] {percentage:.1f}%"
 
     @app_commands.command(
         name="help", description="Basic Archipelago setup information and game lists"
