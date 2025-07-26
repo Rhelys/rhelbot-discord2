@@ -1176,39 +1176,56 @@ class ApCog(commands.GroupCog, group_name="ap"):
     async def ap_progress(self, interaction: discord.Interaction):
         await interaction.response.defer()
         
-        # Check if we have connection data (players)
-        if not self.connection_data:
-            await interaction.followup.send("❌ No active game connection found. Use `/ap track` to connect to a server first.")
-            return
+        # Check if server is running first
+        server_running = self.is_server_running()
         
-        # Check if we have game data (location information)
-        if not self.game_data:
-            await interaction.followup.send("❌ No game data available. Make sure the bot is connected to an active Archipelago server.")
+        if not server_running:
+            await interaction.followup.send("❌ Archipelago server is not running. Use `/ap start` to start the server first.")
             return
         
         # Try to load progress from .apsave file
         save_data = self.load_apsave_data()
         if not save_data:
-            await interaction.followup.send("❌ Could not load save data. Make sure the Archipelago server is running and has a save file.")
+            await interaction.followup.send("❌ Could not load save data. Make sure the Archipelago server has a save file.")
             return
         
-        progress_lines = []
-        progress_lines.append("📊 **Player Progress Report**\n")
-        
-        # Get all players from connection data
+        # Get player and game data from save file or connection data
         all_players = {}
-        for server_key, conn_data in self.connection_data.items():
-            slot_info = conn_data.get("slot_info", {})
-            for slot_id, player_info in slot_info.items():
-                player_id = int(slot_id)
-                all_players[player_id] = {
-                    "name": player_info.get("name", f"Player {player_id}"),
-                    "game": player_info.get("game", "Unknown")
-                }
+        game_data = {}
+        
+        # First try to get data from active websocket connection
+        if self.connection_data and self.game_data:
+            for server_key, conn_data in self.connection_data.items():
+                slot_info = conn_data.get("slot_info", {})
+                for slot_id, player_info in slot_info.items():
+                    player_id = int(slot_id)
+                    all_players[player_id] = {
+                        "name": player_info.get("name", f"Player {player_id}"),
+                        "game": player_info.get("game", "Unknown")
+                    }
+            game_data = self.game_data
+        else:
+            # If no websocket connection, connect to server to get DataPackage
+            await interaction.edit_original_response(content="📡 Connecting to server to get game data...")
+            
+            server_data = await self.fetch_server_data()
+            if server_data:
+                all_players = server_data["players"]
+                game_data = server_data["game_data"]
+                
+                # Store temporarily for the location counting function to use
+                self._temp_player_data = all_players
+                self._temp_game_data = game_data
+            else:
+                # Fallback: try to extract basic data from save file
+                all_players, game_data = self.extract_player_data_from_save(save_data)
         
         if not all_players:
             await interaction.followup.send("❌ No players found in the current game.")
             return
+        
+        progress_lines = []
+        progress_lines.append("📊 **Player Progress Report**\n")
         
         # Get location checks from save data
         location_checks = save_data.get("location_checks", {})
@@ -1223,12 +1240,8 @@ class ApCog(commands.GroupCog, group_name="ap"):
             checked_locations = location_checks.get((0, player_id), set())  # Assuming team 0
             checked_count = len(checked_locations)
             
-            # Get total locations for this player's game
-            total_locations = 0
-            if player_game in self.game_data:
-                game_data = self.game_data[player_game]
-                location_mapping = game_data.get("location_name_to_id", {})
-                total_locations = len(location_mapping)
+            # Get total locations for this player from the actual multiworld data
+            total_locations = self.get_player_total_locations(player_id, save_data)
             
             # Calculate percentage
             if total_locations > 0:
@@ -1383,6 +1396,598 @@ class ApCog(commands.GroupCog, group_name="ap"):
         except Exception as e:
             print(f"Alternative parsing failed: {e}")
             raise e
+    
+    def is_server_running(self) -> bool:
+        """Check if the Archipelago server is currently running"""
+        try:
+            import psutil
+            
+            # Check for MultiServer.py processes
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                try:
+                    if (proc.info['name'] and 'python' in proc.info['name'].lower() and 
+                        proc.info['cmdline'] and any('MultiServer.py' in arg for arg in proc.info['cmdline'])):
+                        return True
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    pass
+                    
+        except ImportError:
+            # Fallback: check if tracked process is still running
+            if self.server_process:
+                try:
+                    # Check if process is still running
+                    return self.server_process.poll() is None
+                except:
+                    pass
+        
+        return False
+    
+    def extract_player_data_from_save(self, save_data):
+        """Extract player and game data from save file when websocket connection is not available"""
+        all_players = {}
+        game_data = {}
+        
+        # Try to extract player names from connect_names in save data
+        connect_names = save_data.get("connect_names", {})
+        
+        # connect_names format: {player_name: (team, slot)}
+        for player_name, (team, slot) in connect_names.items():
+            if team == 0:  # Assuming team 0
+                all_players[slot] = {
+                    "name": player_name,
+                    "game": "Unknown"  # We can't easily get game info from save file alone
+                }
+        
+        # If we couldn't get players from connect_names, try to infer from location_checks
+        if not all_players:
+            location_checks = save_data.get("location_checks", {})
+            for (team, slot) in location_checks.keys():
+                if team == 0:  # Assuming team 0
+                    all_players[slot] = {
+                        "name": f"Player {slot}",
+                        "game": "Unknown"
+                    }
+        
+        # Note: We can't easily extract game data from the save file since it doesn't contain
+        # the full DataPackage. This would require loading the original .archipelago file.
+        # For now, we'll return empty game_data and show progress without total counts.
+        
+        return all_players, game_data
+    
+    async def fetch_server_data(self, server_url: str = "ws://ap.rhelys.com:38281", password: str = "1440"):
+        """Connect to server temporarily to fetch player and game data"""
+        try:
+            print(f"Attempting to fetch server data from {server_url}")
+            
+            # Connect to the Archipelago websocket server
+            websocket = await asyncio.wait_for(
+                websockets.connect(
+                    server_url, 
+                    ping_interval=20,
+                    ping_timeout=10,
+                    close_timeout=10,
+                    max_size=None,
+                    compression="deflate"
+                ),
+                timeout=15.0
+            )
+            
+            try:
+                # Send connection message
+                import uuid
+                connect_msg = {
+                    "cmd": "Connect",
+                    "game": "",
+                    "password": password,
+                    "name": "Rhelbot",
+                    "version": {"major": 0, "minor": 6, "build": 0, "class": "Version"},
+                    "tags": ["Tracker"],
+                    "items_handling": 0b000,
+                    "uuid": uuid.getnode()
+                }
+                await websocket.send(json.dumps([connect_msg]))
+                print("Sent connection message for data fetch")
+                
+                # Wait for connection confirmation and collect data
+                connection_data = None
+                game_data = {}
+                timeout_counter = 0
+                max_timeout = 30  # 30 seconds total timeout
+                
+                while timeout_counter < max_timeout:
+                    try:
+                        message = await asyncio.wait_for(websocket.recv(), timeout=1.0)
+                        data = json.loads(message)
+                        
+                        for msg in data:
+                            cmd = msg.get("cmd", "")
+                            
+                            if cmd == "Connected":
+                                print("Connected to server for data fetch")
+                                connection_data = msg
+                                
+                                # Request DataPackage for games in use
+                                slot_info = msg.get("slot_info", {})
+                                games_in_use = list(set(player_info.get("game", "") for player_info in slot_info.values()))
+                                games_in_use = [game for game in games_in_use if game]
+                                
+                                if games_in_use:
+                                    get_data_msg = {"cmd": "GetDataPackage", "games": games_in_use}
+                                    print(f"Requesting DataPackage for games: {games_in_use}")
+                                else:
+                                    get_data_msg = {"cmd": "GetDataPackage"}
+                                    print("Requesting full DataPackage")
+                                
+                                await websocket.send(json.dumps([get_data_msg]))
+                                
+                            elif cmd == "ConnectionRefused":
+                                print(f"Connection refused: {msg.get('errors', [])}")
+                                return None
+                                
+                            elif cmd == "DataPackage":
+                                print("Received DataPackage")
+                                games = msg.get("data", {}).get("games", {})
+                                game_data = games
+                                
+                                # If we have both connection data and game data, we're done
+                                if connection_data and game_data:
+                                    break
+                        
+                        # If we have both pieces of data, break out of the timeout loop
+                        if connection_data and game_data:
+                            break
+                            
+                    except asyncio.TimeoutError:
+                        timeout_counter += 1
+                        continue
+                
+                # Process the collected data
+                if connection_data:
+                    all_players = {}
+                    slot_info = connection_data.get("slot_info", {})
+                    
+                    for slot_id, player_info in slot_info.items():
+                        player_id = int(slot_id)
+                        all_players[player_id] = {
+                            "name": player_info.get("name", f"Player {player_id}"),
+                            "game": player_info.get("game", "Unknown")
+                        }
+                    
+                    print(f"Successfully fetched data for {len(all_players)} players and {len(game_data)} games")
+                    return {
+                        "players": all_players,
+                        "game_data": game_data
+                    }
+                else:
+                    print("Failed to get connection data from server")
+                    return None
+                    
+            finally:
+                await websocket.close()
+                
+        except Exception as e:
+            print(f"Error fetching server data: {e}")
+            return None
+    
+    def get_player_total_locations(self, player_id: int, save_data: dict) -> int:
+        """Get the actual total number of locations for a specific player from the multiworld data"""
+        try:
+            print(f"DEBUG: Attempting to get total locations for player {player_id}")
+            print(f"DEBUG: Available save_data keys: {list(save_data.keys())}")
+            
+            # Method 1: Check the multiworld object for location data
+            if "multiworld" in save_data:
+                multiworld = save_data["multiworld"]
+                print(f"DEBUG: Found multiworld object, type: {type(multiworld)}")
+                print(f"DEBUG: Multiworld attributes: {[attr for attr in dir(multiworld) if not attr.startswith('_')]}")
+                
+                try:
+                    # Try to access worlds array
+                    if hasattr(multiworld, 'worlds'):
+                        print(f"DEBUG: Found worlds attribute, length: {len(multiworld.worlds) if hasattr(multiworld.worlds, '__len__') else 'unknown'}")
+                        if len(multiworld.worlds) > player_id:
+                            world = multiworld.worlds[player_id]
+                            print(f"DEBUG: Found world for player {player_id}, type: {type(world)}")
+                            print(f"DEBUG: World attributes: {[attr for attr in dir(world) if not attr.startswith('_')]}")
+                            
+                            # Try different location attributes
+                            if hasattr(world, 'location_table'):
+                                locations = world.location_table
+                                print(f"DEBUG: Found location_table with {len(locations)} locations")
+                                return len(locations)
+                            elif hasattr(world, 'locations'):
+                                locations = world.locations
+                                print(f"DEBUG: Found locations with {len(locations)} locations")
+                                return len(locations)
+                            elif hasattr(world, 'location_count'):
+                                count = world.location_count
+                                print(f"DEBUG: Found world.location_count: {count}")
+                                return count
+                    
+                    # Try to access location counts directly from multiworld
+                    if hasattr(multiworld, 'location_count'):
+                        print(f"DEBUG: Found multiworld.location_count, type: {type(multiworld.location_count)}")
+                        if hasattr(multiworld.location_count, '__getitem__'):
+                            try:
+                                count = multiworld.location_count[player_id]
+                                print(f"DEBUG: Found location_count[{player_id}]: {count}")
+                                return count
+                            except (KeyError, IndexError) as e:
+                                print(f"DEBUG: Could not access location_count[{player_id}]: {e}")
+                    
+                    # Try to get all locations and count those belonging to this player
+                    if hasattr(multiworld, 'get_locations'):
+                        try:
+                            all_locations = multiworld.get_locations()
+                            player_locations = [loc for loc in all_locations if getattr(loc, 'player', None) == player_id]
+                            if player_locations:
+                                print(f"DEBUG: Found {len(player_locations)} locations via get_locations() for player {player_id}")
+                                return len(player_locations)
+                        except Exception as e:
+                            print(f"DEBUG: get_locations() failed: {e}")
+                    
+                except Exception as e:
+                    print(f"DEBUG: Error accessing multiworld data: {e}")
+                    import traceback
+                    traceback.print_exc()
+            else:
+                print("DEBUG: No 'multiworld' key found in save_data")
+            
+            # Method 2: Look for location-related data structures in save_data
+            # Note: location_checks contains CHECKED locations, not total locations
+            location_related_keys = [key for key in save_data.keys() if 'location' in key.lower()]
+            print(f"DEBUG: Location-related keys in save_data: {location_related_keys}")
+            
+            for key in location_related_keys:
+                value = save_data[key]
+                print(f"DEBUG: Examining {key}, type: {type(value)}")
+                
+                # Skip location_checks as it contains checked locations, not total locations
+                if key == 'location_checks':
+                    if isinstance(value, dict):
+                        player_keys = [k for k in value.keys() if isinstance(k, tuple) and len(k) == 2 and k[1] == player_id]
+                        if player_keys:
+                            player_data = value[player_keys[0]]
+                            if isinstance(player_data, (list, set)):
+                                print(f"DEBUG: Found {len(player_data)} CHECKED locations in {key} for player {player_id} (not total)")
+                        elif player_id in value:
+                            player_data = value[player_id]
+                            if isinstance(player_data, (list, set)):
+                                print(f"DEBUG: Found {len(player_data)} CHECKED locations in {key}[{player_id}] (not total)")
+                    continue
+                
+                # Look for other location-related data that might contain totals
+                if isinstance(value, dict):
+                    # Look for player-specific data
+                    player_keys = [k for k in value.keys() if isinstance(k, tuple) and len(k) == 2 and k[1] == player_id]
+                    if player_keys:
+                        player_data = value[player_keys[0]]
+                        if isinstance(player_data, (list, set)):
+                            print(f"DEBUG: Found {len(player_data)} locations in {key} for player {player_id}")
+                            return len(player_data)
+                    
+                    # Also check for direct player_id keys
+                    if player_id in value:
+                        player_data = value[player_id]
+                        if isinstance(player_data, (list, set)):
+                            print(f"DEBUG: Found {len(player_data)} locations in {key}[{player_id}]")
+                            return len(player_data)
+            
+            # Method 3: Try to extract from archipelago file if it exists
+            archipelago_file = self.find_archipelago_file()
+            if archipelago_file:
+                print(f"DEBUG: Found .archipelago file: {archipelago_file}")
+                location_count = self.get_locations_from_archipelago_file(archipelago_file, player_id)
+                if location_count > 0:
+                    print(f"DEBUG: Got {location_count} locations from .archipelago file")
+                    return location_count
+            else:
+                print("DEBUG: No .archipelago file found")
+            
+            print(f"DEBUG: Could not determine total locations for player {player_id}")
+            return 0
+            
+        except Exception as e:
+            print(f"DEBUG: Error getting total locations for player {player_id}: {e}")
+            import traceback
+            traceback.print_exc()
+            return 0
+    
+    def find_archipelago_file(self):
+        """Find the .archipelago file in the output directory or extract it from donkey.zip"""
+        from pathlib import Path
+        import zipfile
+        
+        output_path = Path(self.output_directory)
+        
+        # First check if .archipelago file already exists in output directory
+        archipelago_files = list(output_path.glob("*.archipelago"))
+        if archipelago_files:
+            # Return the most recent .archipelago file
+            return max(archipelago_files, key=lambda f: f.stat().st_mtime)
+        
+        # If not found, try to extract it from donkey.zip
+        donkey_zip_path = output_path / "donkey.zip"
+        if donkey_zip_path.exists():
+            try:
+                print(f"DEBUG: Looking for .archipelago file in {donkey_zip_path}")
+                with zipfile.ZipFile(donkey_zip_path, 'r') as zip_file:
+                    # Look for .archipelago files in the zip
+                    archipelago_files_in_zip = [f for f in zip_file.namelist() if f.endswith('.archipelago')]
+                    
+                    if archipelago_files_in_zip:
+                        archipelago_file_in_zip = archipelago_files_in_zip[0]
+                        print(f"DEBUG: Found {archipelago_file_in_zip} in donkey.zip")
+                        
+                        # Extract it to the output directory
+                        extracted_path = output_path / Path(archipelago_file_in_zip).name
+                        with zip_file.open(archipelago_file_in_zip) as source:
+                            with open(extracted_path, 'wb') as target:
+                                target.write(source.read())
+                        
+                        print(f"DEBUG: Extracted .archipelago file to {extracted_path}")
+                        return extracted_path
+                    else:
+                        print("DEBUG: No .archipelago file found in donkey.zip")
+                        
+            except Exception as e:
+                print(f"DEBUG: Error extracting .archipelago file from donkey.zip: {e}")
+        else:
+            print("DEBUG: donkey.zip not found")
+        
+        return None
+    
+    def get_locations_from_archipelago_file(self, archipelago_file, player_id: int) -> int:
+        """Extract location count for a specific player from the .archipelago file"""
+        try:
+            import zlib
+            import pickle
+            print(f"DEBUG: Attempting to read .archipelago file: {archipelago_file}")
+            
+            with open(archipelago_file, 'rb') as f:
+                raw_data = f.read()
+            
+            print(f"DEBUG: File size: {len(raw_data)} bytes")
+            print(f"DEBUG: First 10 bytes: {raw_data[:10]}")
+            
+            multidata = None
+            
+            # The file starts with \x03 which suggests it's a pickled file
+            # The pattern x\xda suggests zlib compression but with a custom header
+            
+            # Method 1: Try as pickled data directly
+            try:
+                print("DEBUG: Trying direct pickle load...")
+                multidata = pickle.loads(raw_data)
+                print("DEBUG: Successfully read as pickled file")
+            except Exception as e:
+                print(f"DEBUG: Direct pickle failed: {e}")
+            
+            # Method 2: Try skipping the first few bytes and then zlib decompress + pickle
+            if multidata is None:
+                for skip_bytes in [1, 2, 3, 4]:
+                    try:
+                        print(f"DEBUG: Trying zlib decompress after skipping {skip_bytes} bytes...")
+                        skipped_data = raw_data[skip_bytes:]
+                        decompressed_data = zlib.decompress(skipped_data)
+                        multidata = pickle.loads(decompressed_data)
+                        print(f"DEBUG: Successfully read as zlib compressed pickle (skipped {skip_bytes} bytes)")
+                        break
+                    except Exception as e:
+                        print(f"DEBUG: Zlib decompress + pickle (skip {skip_bytes}) failed: {e}")
+                        continue
+            
+            # Method 3: Try zlib decompress + YAML after skipping bytes
+            if multidata is None:
+                for skip_bytes in [1, 2, 3, 4]:
+                    try:
+                        print(f"DEBUG: Trying zlib decompress + YAML after skipping {skip_bytes} bytes...")
+                        skipped_data = raw_data[skip_bytes:]
+                        decompressed_data = zlib.decompress(skipped_data)
+                        
+                        from ruyaml import YAML
+                        yaml = YAML(typ='safe', pure=True)
+                        multidata = yaml.load(decompressed_data.decode('utf-8'))
+                        print(f"DEBUG: Successfully read as zlib compressed YAML (skipped {skip_bytes} bytes)")
+                        break
+                    except Exception as e:
+                        print(f"DEBUG: Zlib decompress + YAML (skip {skip_bytes}) failed: {e}")
+                        continue
+            
+            # Method 4: Try to use Archipelago's own Utils if available
+            if multidata is None:
+                try:
+                    import sys
+                    from pathlib import Path
+                    
+                    # Add Archipelago directory to path temporarily
+                    archipelago_path = str(Path(self.ap_directory).resolve())
+                    if archipelago_path not in sys.path:
+                        sys.path.insert(0, archipelago_path)
+                    
+                    try:
+                        from Utils import parse_yaml
+                        # parse_yaml expects a file path, not raw data
+                        multidata = parse_yaml(str(archipelago_file))
+                        print("DEBUG: Successfully read using Archipelago's Utils.parse_yaml")
+                    finally:
+                        if archipelago_path in sys.path:
+                            sys.path.remove(archipelago_path)
+                            
+                except Exception as e:
+                    print(f"DEBUG: Archipelago Utils.parse_yaml failed: {e}")
+            
+            # Method 5: Try different pickle protocols and custom unpickling
+            if multidata is None:
+                try:
+                    print("DEBUG: Trying custom unpickling with different protocols...")
+                    
+                    # Create a custom unpickler that can handle missing modules
+                    class SafeUnpickler(pickle.Unpickler):
+                        def find_class(self, module, name):
+                            # Handle common Archipelago classes
+                            if module in ['NetUtils', 'MultiServer', 'worlds']:
+                                # Create generic placeholder classes
+                                class GenericClass:
+                                    def __init__(self, *args, **kwargs):
+                                        for i, arg in enumerate(args):
+                                            setattr(self, f'arg_{i}', arg)
+                                        for key, value in kwargs.items():
+                                            setattr(self, key, value)
+                                return GenericClass
+                            
+                            # Try normal import
+                            try:
+                                return super().find_class(module, name)
+                            except (ImportError, AttributeError):
+                                # Create generic placeholder
+                                class GenericClass:
+                                    def __init__(self, *args, **kwargs):
+                                        pass
+                                return GenericClass
+                    
+                    import io
+                    unpickler = SafeUnpickler(io.BytesIO(raw_data))
+                    multidata = unpickler.load()
+                    print("DEBUG: Successfully read using custom unpickler")
+                    
+                except Exception as e:
+                    print(f"DEBUG: Custom unpickling failed: {e}")
+            
+            if multidata is None:
+                print("DEBUG: Could not parse .archipelago file with any method")
+                return 0
+            
+            print(f"DEBUG: Multidata type: {type(multidata)}")
+            if isinstance(multidata, dict):
+                print(f"DEBUG: Multidata keys: {list(multidata.keys())}")
+            elif hasattr(multidata, '__dict__'):
+                print(f"DEBUG: Multidata attributes: {list(multidata.__dict__.keys())}")
+            
+            # Look for location data in various possible structures
+            if isinstance(multidata, dict):
+                # Check for locations key
+                if 'locations' in multidata:
+                    locations = multidata['locations']
+                    print(f"DEBUG: Found locations key, type: {type(locations)}")
+                    
+                    if isinstance(locations, dict):
+                        # Check if player_id is a key
+                        if player_id in locations:
+                            player_locations = locations[player_id]
+                            if isinstance(player_locations, (list, dict)):
+                                count = len(player_locations)
+                                print(f"DEBUG: Found {count} locations for player {player_id} in multidata locations")
+                                return count
+                        
+                        # Also check string keys
+                        str_player_id = str(player_id)
+                        if str_player_id in locations:
+                            player_locations = locations[str_player_id]
+                            if isinstance(player_locations, (list, dict)):
+                                count = len(player_locations)
+                                print(f"DEBUG: Found {count} locations for player {player_id} in multidata locations (string key)")
+                                return count
+                        
+                        print(f"DEBUG: Available location keys: {list(locations.keys())}")
+                
+                # Check for location_table
+                if 'location_table' in multidata:
+                    location_table = multidata['location_table']
+                    print(f"DEBUG: Found location_table, type: {type(location_table)}")
+                    
+                    if isinstance(location_table, dict):
+                        if player_id in location_table:
+                            player_locations = location_table[player_id]
+                            if isinstance(player_locations, (list, dict)):
+                                count = len(player_locations)
+                                print(f"DEBUG: Found {count} locations for player {player_id} in location_table")
+                                return count
+                        
+                        # Also check string keys
+                        str_player_id = str(player_id)
+                        if str_player_id in location_table:
+                            player_locations = location_table[str_player_id]
+                            if isinstance(player_locations, (list, dict)):
+                                count = len(player_locations)
+                                print(f"DEBUG: Found {count} locations for player {player_id} in location_table (string key)")
+                                return count
+                        
+                        print(f"DEBUG: Available location_table keys: {list(location_table.keys())}")
+                
+                # Check for worlds data
+                if 'worlds' in multidata:
+                    worlds = multidata['worlds']
+                    print(f"DEBUG: Found worlds, type: {type(worlds)}, length: {len(worlds) if hasattr(worlds, '__len__') else 'unknown'}")
+                    
+                    if isinstance(worlds, list) and len(worlds) > player_id:
+                        world = worlds[player_id]
+                        print(f"DEBUG: Found world for player {player_id}, type: {type(world)}")
+                        
+                        if isinstance(world, dict):
+                            if 'locations' in world:
+                                count = len(world['locations'])
+                                print(f"DEBUG: Found {count} locations for player {player_id} in worlds data")
+                                return count
+                            elif 'location_count' in world:
+                                count = world['location_count']
+                                print(f"DEBUG: Found location_count {count} for player {player_id} in worlds data")
+                                return count
+                            else:
+                                print(f"DEBUG: World keys for player {player_id}: {list(world.keys())}")
+                
+                # Check for any other location-related keys
+                location_keys = [key for key in multidata.keys() if 'location' in key.lower()]
+                print(f"DEBUG: All location-related keys in multidata: {location_keys}")
+                
+                for key in location_keys:
+                    if key not in ['locations', 'location_table']:  # Skip already checked keys
+                        value = multidata[key]
+                        print(f"DEBUG: Examining {key}, type: {type(value)}")
+                        
+                        if isinstance(value, dict):
+                            if player_id in value or str(player_id) in value:
+                                player_data = value.get(player_id) or value.get(str(player_id))
+                                if isinstance(player_data, (list, dict)):
+                                    count = len(player_data)
+                                    print(f"DEBUG: Found {count} locations for player {player_id} in {key}")
+                                    return count
+            
+            # If multidata is not a dict, try to access it as an object
+            elif hasattr(multidata, '__dict__') or hasattr(multidata, '__getattribute__'):
+                print("DEBUG: Multidata is not a dict, trying object attribute access...")
+                
+                # Try common attribute names
+                for attr_name in ['locations', 'location_table', 'worlds', 'location_count']:
+                    try:
+                        attr_value = getattr(multidata, attr_name, None)
+                        if attr_value is not None:
+                            print(f"DEBUG: Found attribute {attr_name}, type: {type(attr_value)}")
+                            
+                            if isinstance(attr_value, dict) and player_id in attr_value:
+                                player_data = attr_value[player_id]
+                                if isinstance(player_data, (list, dict)):
+                                    count = len(player_data)
+                                    print(f"DEBUG: Found {count} locations for player {player_id} in {attr_name}")
+                                    return count
+                            elif isinstance(attr_value, list) and len(attr_value) > player_id:
+                                player_data = attr_value[player_id]
+                                if isinstance(player_data, (list, dict)):
+                                    count = len(player_data)
+                                    print(f"DEBUG: Found {count} locations for player {player_id} in {attr_name}[{player_id}]")
+                                    return count
+                    except Exception as e:
+                        print(f"DEBUG: Error accessing attribute {attr_name}: {e}")
+                        continue
+            
+            print(f"DEBUG: Could not find location data for player {player_id} in .archipelago file")
+            return 0
+                
+        except Exception as e:
+            print(f"DEBUG: Error reading .archipelago file: {e}")
+            import traceback
+            traceback.print_exc()
+            return 0
     
     def create_progress_bar(self, percentage: float, length: int = 20) -> str:
         """Create a visual progress bar"""
