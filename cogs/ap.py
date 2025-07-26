@@ -1230,10 +1230,16 @@ class ApCog(commands.GroupCog, group_name="ap"):
         # Get location checks from save data
         location_checks = save_data.get("location_checks", {})
         
-        # Calculate progress for each player
+        # Filter out "Rhelbot" and create a list for sorting
+        player_progress_data = []
+        
         for player_id, player_info in all_players.items():
             player_name = player_info["name"]
             player_game = player_info["game"]
+            
+            # Skip the Rhelbot tracker
+            if player_name.lower() == "rhelbot":
+                continue
             
             # Get checked locations for this player from save data
             # location_checks format: {(team, slot): set of location_ids}
@@ -1246,17 +1252,32 @@ class ApCog(commands.GroupCog, group_name="ap"):
             # Calculate percentage
             if total_locations > 0:
                 percentage = (checked_count / total_locations) * 100
+                is_complete = percentage >= 100.0
+                
+                # Add checkmark for 100% completion after the game name
+                completion_indicator = " ✅" if is_complete else ""
+                
                 progress_bar = self.create_progress_bar(percentage)
-                progress_lines.append(
-                    f"**{player_name}** ({player_game})\n"
+                player_line = (
+                    f"**{player_name}** ({player_game}) {completion_indicator}\n"
                     f"└ {checked_count}/{total_locations} locations ({percentage:.1f}%)\n"
                     f"└ {progress_bar}\n"
                 )
             else:
-                progress_lines.append(
+                player_line = (
                     f"**{player_name}** ({player_game})\n"
                     f"└ {checked_count}/? locations (No location data available)\n"
                 )
+            
+            # Store for sorting
+            player_progress_data.append((player_name.lower(), player_line))
+        
+        # Sort alphabetically by player name
+        player_progress_data.sort(key=lambda x: x[0])
+        
+        # Add sorted progress lines
+        for _, player_line in player_progress_data:
+            progress_lines.append(player_line)
         
         # Send the progress report
         progress_message = "\n".join(progress_lines)
@@ -1356,10 +1377,18 @@ class ApCog(commands.GroupCog, group_name="ap"):
                                 self.flags = flags
                         return NetworkItem
                     elif name == 'Hint':
-                        # Create a simple class to hold Hint data
-                        class Hint:
-                            def __init__(self, *args, **kwargs):
-                                pass
+                        # Create a proper Hint class that matches the NetUtils.Hint structure
+                        # NetUtils.Hint is a NamedTuple, so we need to handle it differently
+                        from collections import namedtuple
+                        
+                        # Create a NamedTuple-like class that can handle pickle reconstruction
+                        class Hint(namedtuple('Hint', ['receiving_player', 'finding_player', 'location', 'item', 'found', 'entrance', 'item_flags', 'status'])):
+                            def __new__(cls, receiving_player=0, finding_player=0, location=0, item=0, found=False, entrance="", item_flags=0, status=0):
+                                return super().__new__(cls, receiving_player, finding_player, location, item, found, entrance, item_flags, status)
+                            
+                            def __repr__(self):
+                                return f"Hint(receiving_player={self.receiving_player}, finding_player={self.finding_player}, location={self.location}, item={self.item}, found={self.found}, item_flags={self.item_flags})"
+                        
                         return Hint
                     else:
                         # For other NetUtils classes, create a generic placeholder
@@ -1742,251 +1771,41 @@ class ApCog(commands.GroupCog, group_name="ap"):
         try:
             import zlib
             import pickle
-            print(f"DEBUG: Attempting to read .archipelago file: {archipelago_file}")
             
             with open(archipelago_file, 'rb') as f:
                 raw_data = f.read()
             
-            print(f"DEBUG: File size: {len(raw_data)} bytes")
-            print(f"DEBUG: First 10 bytes: {raw_data[:10]}")
-            
-            multidata = None
-            
-            # The file starts with \x03 which suggests it's a pickled file
-            # The pattern x\xda suggests zlib compression but with a custom header
-            
-            # Method 1: Try as pickled data directly
+            # .archipelago files are zlib compressed pickle files with a 1-byte header
+            # Skip the first byte and decompress with zlib, then unpickle
             try:
-                print("DEBUG: Trying direct pickle load...")
-                multidata = pickle.loads(raw_data)
-                print("DEBUG: Successfully read as pickled file")
+                skipped_data = raw_data[1:]  # Skip first byte
+                decompressed_data = zlib.decompress(skipped_data)
+                multidata = pickle.loads(decompressed_data)
             except Exception as e:
-                print(f"DEBUG: Direct pickle failed: {e}")
-            
-            # Method 2: Try skipping the first few bytes and then zlib decompress + pickle
-            if multidata is None:
-                for skip_bytes in [1, 2, 3, 4]:
-                    try:
-                        print(f"DEBUG: Trying zlib decompress after skipping {skip_bytes} bytes...")
-                        skipped_data = raw_data[skip_bytes:]
-                        decompressed_data = zlib.decompress(skipped_data)
-                        multidata = pickle.loads(decompressed_data)
-                        print(f"DEBUG: Successfully read as zlib compressed pickle (skipped {skip_bytes} bytes)")
-                        break
-                    except Exception as e:
-                        print(f"DEBUG: Zlib decompress + pickle (skip {skip_bytes}) failed: {e}")
-                        continue
-            
-            # Method 3: Try zlib decompress + YAML after skipping bytes
-            if multidata is None:
-                for skip_bytes in [1, 2, 3, 4]:
-                    try:
-                        print(f"DEBUG: Trying zlib decompress + YAML after skipping {skip_bytes} bytes...")
-                        skipped_data = raw_data[skip_bytes:]
-                        decompressed_data = zlib.decompress(skipped_data)
-                        
-                        from ruyaml import YAML
-                        yaml = YAML(typ='safe', pure=True)
-                        multidata = yaml.load(decompressed_data.decode('utf-8'))
-                        print(f"DEBUG: Successfully read as zlib compressed YAML (skipped {skip_bytes} bytes)")
-                        break
-                    except Exception as e:
-                        print(f"DEBUG: Zlib decompress + YAML (skip {skip_bytes}) failed: {e}")
-                        continue
-            
-            # Method 4: Try to use Archipelago's own Utils if available
-            if multidata is None:
-                try:
-                    import sys
-                    from pathlib import Path
-                    
-                    # Add Archipelago directory to path temporarily
-                    archipelago_path = str(Path(self.ap_directory).resolve())
-                    if archipelago_path not in sys.path:
-                        sys.path.insert(0, archipelago_path)
-                    
-                    try:
-                        from Utils import parse_yaml
-                        # parse_yaml expects a file path, not raw data
-                        multidata = parse_yaml(str(archipelago_file))
-                        print("DEBUG: Successfully read using Archipelago's Utils.parse_yaml")
-                    finally:
-                        if archipelago_path in sys.path:
-                            sys.path.remove(archipelago_path)
-                            
-                except Exception as e:
-                    print(f"DEBUG: Archipelago Utils.parse_yaml failed: {e}")
-            
-            # Method 5: Try different pickle protocols and custom unpickling
-            if multidata is None:
-                try:
-                    print("DEBUG: Trying custom unpickling with different protocols...")
-                    
-                    # Create a custom unpickler that can handle missing modules
-                    class SafeUnpickler(pickle.Unpickler):
-                        def find_class(self, module, name):
-                            # Handle common Archipelago classes
-                            if module in ['NetUtils', 'MultiServer', 'worlds']:
-                                # Create generic placeholder classes
-                                class GenericClass:
-                                    def __init__(self, *args, **kwargs):
-                                        for i, arg in enumerate(args):
-                                            setattr(self, f'arg_{i}', arg)
-                                        for key, value in kwargs.items():
-                                            setattr(self, key, value)
-                                return GenericClass
-                            
-                            # Try normal import
-                            try:
-                                return super().find_class(module, name)
-                            except (ImportError, AttributeError):
-                                # Create generic placeholder
-                                class GenericClass:
-                                    def __init__(self, *args, **kwargs):
-                                        pass
-                                return GenericClass
-                    
-                    import io
-                    unpickler = SafeUnpickler(io.BytesIO(raw_data))
-                    multidata = unpickler.load()
-                    print("DEBUG: Successfully read using custom unpickler")
-                    
-                except Exception as e:
-                    print(f"DEBUG: Custom unpickling failed: {e}")
-            
-            if multidata is None:
-                print("DEBUG: Could not parse .archipelago file with any method")
+                print(f"Error parsing .archipelago file: {e}")
                 return 0
             
-            print(f"DEBUG: Multidata type: {type(multidata)}")
-            if isinstance(multidata, dict):
-                print(f"DEBUG: Multidata keys: {list(multidata.keys())}")
-            elif hasattr(multidata, '__dict__'):
-                print(f"DEBUG: Multidata attributes: {list(multidata.__dict__.keys())}")
-            
-            # Look for location data in various possible structures
-            if isinstance(multidata, dict):
-                # Check for locations key
-                if 'locations' in multidata:
-                    locations = multidata['locations']
-                    print(f"DEBUG: Found locations key, type: {type(locations)}")
+            # Look for location data in the multidata
+            if isinstance(multidata, dict) and 'locations' in multidata:
+                locations = multidata['locations']
+                if isinstance(locations, dict):
+                    # Check if player_id is a key
+                    if player_id in locations:
+                        player_locations = locations[player_id]
+                        if isinstance(player_locations, (list, dict)):
+                            return len(player_locations)
                     
-                    if isinstance(locations, dict):
-                        # Check if player_id is a key
-                        if player_id in locations:
-                            player_locations = locations[player_id]
-                            if isinstance(player_locations, (list, dict)):
-                                count = len(player_locations)
-                                print(f"DEBUG: Found {count} locations for player {player_id} in multidata locations")
-                                return count
-                        
-                        # Also check string keys
-                        str_player_id = str(player_id)
-                        if str_player_id in locations:
-                            player_locations = locations[str_player_id]
-                            if isinstance(player_locations, (list, dict)):
-                                count = len(player_locations)
-                                print(f"DEBUG: Found {count} locations for player {player_id} in multidata locations (string key)")
-                                return count
-                        
-                        print(f"DEBUG: Available location keys: {list(locations.keys())}")
-                
-                # Check for location_table
-                if 'location_table' in multidata:
-                    location_table = multidata['location_table']
-                    print(f"DEBUG: Found location_table, type: {type(location_table)}")
-                    
-                    if isinstance(location_table, dict):
-                        if player_id in location_table:
-                            player_locations = location_table[player_id]
-                            if isinstance(player_locations, (list, dict)):
-                                count = len(player_locations)
-                                print(f"DEBUG: Found {count} locations for player {player_id} in location_table")
-                                return count
-                        
-                        # Also check string keys
-                        str_player_id = str(player_id)
-                        if str_player_id in location_table:
-                            player_locations = location_table[str_player_id]
-                            if isinstance(player_locations, (list, dict)):
-                                count = len(player_locations)
-                                print(f"DEBUG: Found {count} locations for player {player_id} in location_table (string key)")
-                                return count
-                        
-                        print(f"DEBUG: Available location_table keys: {list(location_table.keys())}")
-                
-                # Check for worlds data
-                if 'worlds' in multidata:
-                    worlds = multidata['worlds']
-                    print(f"DEBUG: Found worlds, type: {type(worlds)}, length: {len(worlds) if hasattr(worlds, '__len__') else 'unknown'}")
-                    
-                    if isinstance(worlds, list) and len(worlds) > player_id:
-                        world = worlds[player_id]
-                        print(f"DEBUG: Found world for player {player_id}, type: {type(world)}")
-                        
-                        if isinstance(world, dict):
-                            if 'locations' in world:
-                                count = len(world['locations'])
-                                print(f"DEBUG: Found {count} locations for player {player_id} in worlds data")
-                                return count
-                            elif 'location_count' in world:
-                                count = world['location_count']
-                                print(f"DEBUG: Found location_count {count} for player {player_id} in worlds data")
-                                return count
-                            else:
-                                print(f"DEBUG: World keys for player {player_id}: {list(world.keys())}")
-                
-                # Check for any other location-related keys
-                location_keys = [key for key in multidata.keys() if 'location' in key.lower()]
-                print(f"DEBUG: All location-related keys in multidata: {location_keys}")
-                
-                for key in location_keys:
-                    if key not in ['locations', 'location_table']:  # Skip already checked keys
-                        value = multidata[key]
-                        print(f"DEBUG: Examining {key}, type: {type(value)}")
-                        
-                        if isinstance(value, dict):
-                            if player_id in value or str(player_id) in value:
-                                player_data = value.get(player_id) or value.get(str(player_id))
-                                if isinstance(player_data, (list, dict)):
-                                    count = len(player_data)
-                                    print(f"DEBUG: Found {count} locations for player {player_id} in {key}")
-                                    return count
+                    # Also check string keys
+                    str_player_id = str(player_id)
+                    if str_player_id in locations:
+                        player_locations = locations[str_player_id]
+                        if isinstance(player_locations, (list, dict)):
+                            return len(player_locations)
             
-            # If multidata is not a dict, try to access it as an object
-            elif hasattr(multidata, '__dict__') or hasattr(multidata, '__getattribute__'):
-                print("DEBUG: Multidata is not a dict, trying object attribute access...")
-                
-                # Try common attribute names
-                for attr_name in ['locations', 'location_table', 'worlds', 'location_count']:
-                    try:
-                        attr_value = getattr(multidata, attr_name, None)
-                        if attr_value is not None:
-                            print(f"DEBUG: Found attribute {attr_name}, type: {type(attr_value)}")
-                            
-                            if isinstance(attr_value, dict) and player_id in attr_value:
-                                player_data = attr_value[player_id]
-                                if isinstance(player_data, (list, dict)):
-                                    count = len(player_data)
-                                    print(f"DEBUG: Found {count} locations for player {player_id} in {attr_name}")
-                                    return count
-                            elif isinstance(attr_value, list) and len(attr_value) > player_id:
-                                player_data = attr_value[player_id]
-                                if isinstance(player_data, (list, dict)):
-                                    count = len(player_data)
-                                    print(f"DEBUG: Found {count} locations for player {player_id} in {attr_name}[{player_id}]")
-                                    return count
-                    except Exception as e:
-                        print(f"DEBUG: Error accessing attribute {attr_name}: {e}")
-                        continue
-            
-            print(f"DEBUG: Could not find location data for player {player_id} in .archipelago file")
             return 0
                 
         except Exception as e:
-            print(f"DEBUG: Error reading .archipelago file: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"Error reading .archipelago file: {e}")
             return 0
     
     def create_progress_bar(self, percentage: float, length: int = 20) -> str:
@@ -1994,6 +1813,202 @@ class ApCog(commands.GroupCog, group_name="ap"):
         filled_length = int(length * percentage / 100)
         bar = "█" * filled_length + "░" * (length - filled_length)
         return f"[{bar}] {percentage:.1f}%"
+
+    @app_commands.command(
+        name="hints",
+        description="Shows all current hints for key items, grouped by finding player",
+    )
+    async def ap_hints(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        
+        # Check if server is running first
+        server_running = self.is_server_running()
+        
+        if not server_running:
+            await interaction.followup.send("❌ Archipelago server is not running. Use `/ap start` to start the server first.")
+            return
+        
+        # Load save data to get hints
+        save_data = self.load_apsave_data()
+        if not save_data:
+            await interaction.followup.send("❌ Could not load save data. Make sure the Archipelago server has a save file.")
+            return
+        
+        # Get hints from save data
+        hints_data = save_data.get("hints", {})
+        if not hints_data:
+            await interaction.followup.send("📝 No hints found in the current game.")
+            return
+        
+        # Extract all hints from the dictionary of sets and deduplicate
+        all_hints_set = set()
+        for hint_set in hints_data.values():
+            if isinstance(hint_set, set):
+                all_hints_set.update(hint_set)
+            elif isinstance(hint_set, (list, tuple)):
+                all_hints_set.update(hint_set)
+            elif hint_set:  # Single hint object
+                all_hints_set.add(hint_set)
+        
+        all_hints = list(all_hints_set)
+        
+        if not all_hints:
+            await interaction.followup.send("📝 No hints found in the current game.")
+            return
+        
+        # Get player and game data from save file or connection data
+        all_players = {}
+        game_data = {}
+        
+        # First try to get data from active websocket connection
+        if self.connection_data and self.game_data:
+            for server_key, conn_data in self.connection_data.items():
+                slot_info = conn_data.get("slot_info", {})
+                for slot_id, player_info in slot_info.items():
+                    player_id = int(slot_id)
+                    all_players[player_id] = {
+                        "name": player_info.get("name", f"Player {player_id}"),
+                        "game": player_info.get("game", "Unknown")
+                    }
+            game_data = self.game_data
+        else:
+            # If no websocket connection, connect to server to get DataPackage
+            await interaction.edit_original_response(content="📡 Connecting to server to get game data...")
+            
+            server_data = await self.fetch_server_data()
+            if server_data:
+                all_players = server_data["players"]
+                game_data = server_data["game_data"]
+                
+                # Store the fetched data temporarily for lookups
+                self.game_data = game_data
+                self.connection_data["temp_fetch"] = {"slot_info": {str(k): v for k, v in all_players.items()}}
+            else:
+                # Fallback: try to extract basic data from save file
+                all_players, game_data = self.extract_player_data_from_save(save_data)
+        
+        # Filter hints for key items only (item_flags = 1) and group by finding player
+        key_item_hints = []
+        for hint in all_hints:
+            # Check if this is a Hint object with item_flags = 1 (progression items)
+            if hasattr(hint, 'item_flags') and hint.item_flags == 1:
+                key_item_hints.append(hint)
+            elif isinstance(hint, (list, tuple)) and len(hint) >= 7:
+                # Handle tuple/list representation
+                item_flags = hint[6] if len(hint) > 6 else 0
+                if item_flags == 1:
+                    # Convert to a simple object for easier handling
+                    class SimpleHint:
+                        def __init__(self, data):
+                            self.receiving_player = data[0]
+                            self.finding_player = data[1]
+                            self.location = data[2]
+                            self.item = data[3]
+                            self.found = data[4]
+                            self.entrance = data[5] if len(data) > 5 else ""
+                            self.item_flags = data[6] if len(data) > 6 else 0
+                            self.status = data[7] if len(data) > 7 else 0
+                    
+                    key_item_hints.append(SimpleHint(hint))
+            elif isinstance(hint, dict) and hint.get('item_flags', 0) == 1:
+                # Handle dictionary representation
+                class SimpleHint:
+                    def __init__(self, data):
+                        self.receiving_player = data.get('receiving_player', 0)
+                        self.finding_player = data.get('finding_player', 0)
+                        self.location = data.get('location', 0)
+                        self.item = data.get('item', 0)
+                        self.found = data.get('found', False)
+                        self.entrance = data.get('entrance', "")
+                        self.item_flags = data.get('item_flags', 0)
+                        self.status = data.get('status', 0)
+                
+                key_item_hints.append(SimpleHint(hint))
+        
+        if not key_item_hints:
+            await interaction.followup.send("📝 No hints found for key items in the current game.")
+            return
+        
+        # Group hints by finding player
+        hints_by_finder = {}
+        for hint in key_item_hints:
+            finding_player = hint.finding_player
+            if finding_player not in hints_by_finder:
+                hints_by_finder[finding_player] = []
+            hints_by_finder[finding_player].append(hint)
+        
+        # Build the hints message
+        hint_lines = []
+        hint_lines.append("🔑 **Key Item Hints**\n")
+        
+        # Sort finding players alphabetically
+        sorted_finders = []
+        for finding_player in hints_by_finder.keys():
+            # Skip Rhelbot
+            player_name = all_players.get(finding_player, {}).get("name", f"Player {finding_player}")
+            if player_name.lower() != "rhelbot":
+                sorted_finders.append((player_name.lower(), finding_player, player_name))
+        
+        sorted_finders.sort(key=lambda x: x[0])
+        
+        for _, finding_player, finder_name in sorted_finders:
+            finder_game = all_players.get(finding_player, {}).get("game", "Unknown")
+            hint_lines.append(f"## {finder_name} ({finder_game})")
+            
+            # Sort hints for this player by receiving player name
+            player_hints = hints_by_finder[finding_player]
+            sorted_hints = []
+            for hint in player_hints:
+                receiving_player_name = all_players.get(hint.receiving_player, {}).get("name", f"Player {hint.receiving_player}")
+                sorted_hints.append((receiving_player_name.lower(), hint, receiving_player_name))
+            
+            sorted_hints.sort(key=lambda x: x[0])
+            
+            for _, hint, receiving_player_name in sorted_hints:
+                # Look up item and location names
+                receiving_game = all_players.get(hint.receiving_player, {}).get("game", "Unknown")
+                finder_game = all_players.get(hint.finding_player, {}).get("game", "Unknown")
+                
+                # Get item name (from receiving player's game)
+                item_name = self.lookup_item_name(receiving_game, hint.item) if game_data else f"Item {hint.item}"
+                
+                # Get location name (from finding player's game)
+                location_name = self.lookup_location_name(finder_game, hint.location) if game_data else f"Location {hint.location}"
+                
+                # Status indicator
+                status_indicator = " ✅" if hint.found else ""
+                
+                hint_lines.append(f"└ **{item_name}** → {receiving_player_name}")
+                hint_lines.append(f"  📍 *{location_name}* {status_indicator}")
+            
+            hint_lines.append("")  # Empty line between players
+        
+        # Send the hints message
+        hints_message = "\n".join(hint_lines)
+        
+        # Split message if it's too long for Discord
+        if len(hints_message) > 2000:
+            # Send in chunks
+            chunks = []
+            current_chunk = "🔑 **Key Item Hints**\n\n"
+            
+            for line in hint_lines[1:]:  # Skip the header since we added it to current_chunk
+                if len(current_chunk + line + "\n") > 1900:  # Leave some buffer
+                    chunks.append(current_chunk)
+                    current_chunk = line + "\n"
+                else:
+                    current_chunk += line + "\n"
+            
+            if current_chunk.strip():
+                chunks.append(current_chunk)
+            
+            for i, chunk in enumerate(chunks):
+                if i == 0:
+                    await interaction.followup.send(chunk)
+                else:
+                    await interaction.channel.send(chunk)
+        else:
+            await interaction.followup.send(hints_message)
 
     @app_commands.command(
         name="help", description="Basic Archipelago setup information and game lists"
