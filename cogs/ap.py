@@ -1990,7 +1990,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
         if len(hints_message) > 2000:
             # Send in chunks
             chunks = []
-            current_chunk = "🔑 **Key Item Hints**\n\n"
+            current_chunk = "## 🔑 **Key Item Hints**\n\n"
             
             for line in hint_lines[1:]:  # Skip the header since we added it to current_chunk
                 if len(current_chunk + line + "\n") > 1900:  # Leave some buffer
