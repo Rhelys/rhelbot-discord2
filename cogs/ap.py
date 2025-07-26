@@ -28,6 +28,9 @@ class ApCog(commands.GroupCog, group_name="ap"):
         # Data storage for lookups
         self.game_data: Dict[str, Dict] = {}  # game_name -> {item_name_to_id, location_name_to_id}
         self.connection_data: Dict[str, Dict] = {}  # server_url -> {slot_info, etc}
+        
+        # Server process tracking
+        self.server_process = None
 
     # Config section - To be updated if anything moves around, or it's going to be run by someone else
     output_directory = "./Archipelago/output/"
@@ -662,7 +665,19 @@ class ApCog(commands.GroupCog, group_name="ap"):
                 return
         else:
             # Setting up the bot tracking capability
-            shutil.copy("./rhelbot.yaml", "./Archipelago/players/rhelbot.yaml")
+            try:
+                if path.exists("./rhelbot.yaml"):
+                    shutil.copy("./rhelbot.yaml", "./Archipelago/players/rhelbot.yaml")
+                    print("Successfully copied rhelbot.yaml to players directory")
+                else:
+                    print("Warning: rhelbot.yaml not found, skipping copy")
+            except Exception as e:
+                print(f"Error copying rhelbot.yaml: {e}")
+                await interaction.edit_original_response(
+                    content=f"Warning: Could not copy rhelbot.yaml: {str(e)}"
+                )
+                return
+            
             # Start the generation process and wait for it to complete
             process = await asyncio.create_subprocess_exec(
                 "python", "./Archipelago/Generate.py",
@@ -684,7 +699,10 @@ class ApCog(commands.GroupCog, group_name="ap"):
             f"{self.output_directory}{outputfile[0]}",
             f"{self.output_directory}/donkey.zip",
         )
-        subprocess.Popen([r"serverstart.bat"])
+        
+        # Start the server and track the process
+        self.server_process = subprocess.Popen([r"serverstart.bat"])
+        print(f"Started server process with PID: {self.server_process.pid}")
         await sleep(8)
 
         await interaction.edit_original_response(
@@ -774,23 +792,65 @@ class ApCog(commands.GroupCog, group_name="ap"):
     async def ap_status(self, interaction: discord.Interaction):
         await interaction.response.defer()
 
+        # Check if server is running
+        server_running = False
+        server_pid = None
+        
+        try:
+            import psutil
+            
+            # Check for MultiServer.py processes
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                try:
+                    if (proc.info['name'] and 'python' in proc.info['name'].lower() and 
+                        proc.info['cmdline'] and any('MultiServer.py' in arg for arg in proc.info['cmdline'])):
+                        server_running = True
+                        server_pid = proc.info['pid']
+                        break
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    pass
+                    
+        except ImportError:
+            # Fallback: check if tracked process is still running
+            if self.server_process:
+                try:
+                    # Check if process is still running
+                    if self.server_process.poll() is None:
+                        server_running = True
+                        server_pid = self.server_process.pid
+                except:
+                    pass
+
+        # Get current players
         try:
             current_players = self.list_players()
-        except AttributeError:
-            await interaction.followup.send("No current players in the game")
-            return
+        except (AttributeError, FileNotFoundError):
+            current_players = {}
 
-        if not current_players:
-            await interaction.followup.send("No current players in the game")
-            return
+        # Build status message
+        status_parts = []
+        
+        # Server status
+        if server_running:
+            status_parts.append(f"🟢 **Server Status**: Running (PID: {server_pid})")
+            status_parts.append("📡 **Connection**: ap.rhelys.com:38281")
+        else:
+            status_parts.append("🔴 **Server Status**: Not running")
+        
+        # Player status
+        if current_players:
+            playerlist = list(current_players.keys())
+            status_parts.append(f"👥 **Current Players**: {', '.join(playerlist)}")
+        else:
+            status_parts.append("👥 **Current Players**: None")
+        
+        # Game file status
+        if path.exists(f"{self.output_directory}/donkey.zip"):
+            status_parts.append("📁 **Game File**: Ready (donkey.zip)")
+        else:
+            status_parts.append("📁 **Game File**: Not found")
 
-        # Todo - Add the game each person is playing
-        playerlist = list(current_players.keys())
-
-        await interaction.followup.send(
-            f"Current players: {playerlist}\n" f"Game status: Unknown"
-        )
-        # Todo - add in server status
+        await interaction.followup.send("\n".join(status_parts))
 
     @app_commands.command(
         name="leave",
@@ -832,6 +892,149 @@ class ApCog(commands.GroupCog, group_name="ap"):
 
             await interaction.response.send_message(
                 f"{player.capitalize()}'s file has been deleted"
+            )
+
+    @app_commands.command(
+        name="stop",
+        description="Stops the currently running Archipelago server",
+    )
+    async def ap_stop(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        
+        try:
+            import psutil
+            import os
+            
+            # Find and kill the MultiServer.py process
+            killed_processes = []
+            
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                try:
+                    # Check if this is a Python process running MultiServer.py
+                    if (proc.info['name'] and 'python' in proc.info['name'].lower() and 
+                        proc.info['cmdline'] and any('MultiServer.py' in arg for arg in proc.info['cmdline'])):
+                        
+                        print(f"Found MultiServer process: PID {proc.info['pid']}, CMD: {' '.join(proc.info['cmdline'])}")
+                        proc.kill()
+                        killed_processes.append(proc.info['pid'])
+                        
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    pass
+            
+            # Also try to terminate the tracked server process if it exists
+            if self.server_process:
+                try:
+                    # Kill the batch file process and its children
+                    parent = psutil.Process(self.server_process.pid)
+                    for child in parent.children(recursive=True):
+                        child.kill()
+                    parent.kill()
+                    killed_processes.append(self.server_process.pid)
+                    self.server_process = None
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+            
+            if killed_processes:
+                await interaction.followup.send(
+                    f"✅ Successfully stopped Archipelago server.\n"
+                    f"Killed processes: {', '.join(map(str, killed_processes))}"
+                )
+            else:
+                await interaction.followup.send("❌ No running Archipelago server found.")
+                
+        except ImportError:
+            # Fallback method using taskkill on Windows
+            try:
+                # Kill any Python processes running MultiServer.py
+                result = subprocess.run([
+                    "taskkill", "/F", "/IM", "python.exe", "/FI", "WINDOWTITLE eq *MultiServer*"
+                ], capture_output=True, text=True)
+                
+                if result.returncode == 0:
+                    await interaction.followup.send("✅ Successfully stopped Archipelago server using taskkill.")
+                else:
+                    await interaction.followup.send("❌ No running Archipelago server found or failed to stop.")
+                    
+            except Exception as e:
+                await interaction.followup.send(f"❌ Error stopping server: {str(e)}")
+
+    @app_commands.command(
+        name="restart",
+        description="Restarts the Archipelago server using the existing game file (no generation)",
+    )
+    async def ap_restart(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        
+        # Check if game file exists
+        if not path.exists(f"{self.output_directory}/donkey.zip"):
+            await interaction.followup.send(
+                "❌ No game file found (donkey.zip). Use `/ap start` to generate and start a new game first."
+            )
+            return
+        
+        await interaction.followup.send("🔄 Restarting Archipelago server...")
+        
+        # Stop any running server first
+        try:
+            import psutil
+            
+            # Find and kill the MultiServer.py process
+            killed_processes = []
+            
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                try:
+                    # Check if this is a Python process running MultiServer.py
+                    if (proc.info['name'] and 'python' in proc.info['name'].lower() and 
+                        proc.info['cmdline'] and any('MultiServer.py' in arg for arg in proc.info['cmdline'])):
+                        
+                        print(f"Stopping MultiServer process: PID {proc.info['pid']}")
+                        proc.kill()
+                        killed_processes.append(proc.info['pid'])
+                        
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    pass
+            
+            # Also try to terminate the tracked server process if it exists
+            if self.server_process:
+                try:
+                    # Kill the batch file process and its children
+                    parent = psutil.Process(self.server_process.pid)
+                    for child in parent.children(recursive=True):
+                        child.kill()
+                    parent.kill()
+                    killed_processes.append(self.server_process.pid)
+                    self.server_process = None
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+            
+            if killed_processes:
+                print(f"Stopped processes: {killed_processes}")
+                await sleep(2)  # Give processes time to fully terminate
+                
+        except ImportError:
+            # Fallback method using taskkill on Windows
+            try:
+                subprocess.run([
+                    "taskkill", "/F", "/IM", "python.exe", "/FI", "WINDOWTITLE eq *MultiServer*"
+                ], capture_output=True, text=True)
+                await sleep(2)
+            except Exception as e:
+                print(f"Error stopping server: {e}")
+        
+        # Start the server with existing game file
+        try:
+            self.server_process = subprocess.Popen([r"serverstart.bat"])
+            print(f"Restarted server process with PID: {self.server_process.pid}")
+            await sleep(8)  # Give server time to start
+            
+            await interaction.edit_original_response(
+                content="✅ Archipelago server restarted successfully!\n"
+                        "Server: ap.rhelys.com\nPort: 38281\nPassword: 1440"
+            )
+            
+        except Exception as e:
+            await interaction.edit_original_response(
+                content=f"❌ Failed to restart server: {str(e)}"
             )
 
     @app_commands.command(
