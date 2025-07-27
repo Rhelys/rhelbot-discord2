@@ -276,6 +276,14 @@ class ApCog(commands.GroupCog, group_name="ap"):
         if server_url in self.active_connections:
             del self.active_connections[server_url]
 
+    def _lookup_in_mapping(self, mapping: dict, lookup_id: int, mapping_name: str) -> str:
+        """Generic lookup function for ID to name mappings"""
+        for name, id_value in mapping.items():
+            if str(id_value) == str(lookup_id):
+                print(f"Found match: {name}")
+                return name
+        return None
+
     def lookup_item_name(self, game: str, item_id: int) -> str:
         """Look up item name from ID using game data"""
         print(f"Looking up item: game='{game}', item_id={item_id}")
@@ -296,11 +304,9 @@ class ApCog(commands.GroupCog, group_name="ap"):
         item_mapping = game_data["item_name_to_id"]
         print(f"Searching through {len(item_mapping)} items for ID {item_id}")
         
-        # Search through the item_name_to_id mapping
-        for item_name, id_value in item_mapping.items():
-            if str(id_value) == str(item_id):
-                print(f"Found match: {item_name}")
-                return item_name
+        result = self._lookup_in_mapping(item_mapping, item_id, "item")
+        if result:
+            return result
         
         print(f"No match found for item ID {item_id}")
         return f"Item {item_id}"
@@ -325,36 +331,29 @@ class ApCog(commands.GroupCog, group_name="ap"):
         location_mapping = game_data["location_name_to_id"]
         print(f"Searching through {len(location_mapping)} locations for ID {location_id}")
         
-        # Search through the location_name_to_id mapping
-        for location_name, id_value in location_mapping.items():
-            if str(id_value) == str(location_id):
-                print(f"Found match: {location_name}")
-                return location_name
+        result = self._lookup_in_mapping(location_mapping, location_id, "location")
+        if result:
+            return result
         
         print(f"No match found for location ID {location_id}")
         return f"Location {location_id}"
     
-    def lookup_player_name(self, player_id: int) -> str:
-        """Look up player name from ID using connection data"""
-        # Search through all connection data for the player
+    def _lookup_player_info(self, player_id: int, info_key: str, default_value: str) -> str:
+        """Generic function to look up player information from connection data"""
         for server_url, conn_data in self.connection_data.items():
             slot_info = conn_data.get("slot_info", {})
             for slot_id, player_info in slot_info.items():
                 if str(slot_id) == str(player_id):
-                    return player_info.get("name", f"Player {player_id}")
-        
-        return f"Player {player_id}"
+                    return player_info.get(info_key, default_value)
+        return default_value
+    
+    def lookup_player_name(self, player_id: int) -> str:
+        """Look up player name from ID using connection data"""
+        return self._lookup_player_info(player_id, "name", f"Player {player_id}")
     
     def lookup_player_game(self, player_id: int) -> str:
         """Look up player's game from ID using connection data"""
-        # Search through all connection data for the player's game
-        for server_url, conn_data in self.connection_data.items():
-            slot_info = conn_data.get("slot_info", {})
-            for slot_id, player_info in slot_info.items():
-                if str(slot_id) == str(player_id):
-                    return player_info.get("game", "Unknown")
-        
-        return "Unknown"
+        return self._lookup_player_info(player_id, "game", "Unknown")
 
     async def process_ap_message(self, msg: dict, channel):
         """Process and format Archipelago messages for Discord"""
@@ -888,16 +887,67 @@ class ApCog(commands.GroupCog, group_name="ap"):
         # Todo - Store player files somewhere with the date of the game and remove them for next generation
     """
 
+    def _get_output_files(self):
+        """Helper method to get list of files in output directory"""
+        return listdir(self.output_directory)
+
+    def _cleanup_output_files(self):
+        """Helper method to clean up all files in output directory"""
+        for file in self._get_output_files():
+            remove(f"{self.output_directory}/{file}")
+
+    async def _kill_server_processes(self):
+        """Helper method to kill running Archipelago server processes"""
+        killed_processes = []
+        
+        try:
+            import psutil
+            
+            # Find and kill the MultiServer.py process
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                try:
+                    # Check if this is a Python process running MultiServer.py
+                    if (proc.info['name'] and 'python' in proc.info['name'].lower() and 
+                        proc.info['cmdline'] and any('MultiServer.py' in arg for arg in proc.info['cmdline'])):
+                        
+                        print(f"Found MultiServer process: PID {proc.info['pid']}")
+                        proc.kill()
+                        killed_processes.append(proc.info['pid'])
+                        
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    pass
+            
+            # Also try to terminate the tracked server process if it exists
+            if self.server_process:
+                try:
+                    # Kill the batch file process and its children
+                    parent = psutil.Process(self.server_process.pid)
+                    for child in parent.children(recursive=True):
+                        child.kill()
+                    parent.kill()
+                    killed_processes.append(self.server_process.pid)
+                    self.server_process = None
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+                    
+        except ImportError:
+            # Fallback method using taskkill on Windows
+            try:
+                subprocess.run([
+                    "taskkill", "/F", "/IM", "python.exe", "/FI", "WINDOWTITLE eq *MultiServer*"
+                ], capture_output=True, text=True)
+            except Exception as e:
+                print(f"Error stopping server: {e}")
+        
+        return killed_processes
+
     @app_commands.command(
         name="spoiler", description="Pulls the spoiler log from the current game"
     )
     async def ap_spoiler(self, interaction: discord.Interaction):
         await interaction.response.defer()
 
-        def outputfiles():
-            return listdir(self.output_directory)
-
-        for file in outputfiles():
+        for file in self._get_output_files():
             if file.endswith(".zip"):
                 with zipfile.ZipFile(
                     f"{self.output_directory}/donkey.zip", mode="r"
@@ -910,7 +960,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
                                 "Spoiler file for current game"
                             )
 
-        for endfile in outputfiles():
+        for endfile in self._get_output_files():
             if endfile.endswith("Spoiler.txt"):
                 with open(f"{self.output_directory}/{endfile}", "rb") as sendfile:
                     await interaction.channel.send(
@@ -1508,37 +1558,45 @@ class ApCog(commands.GroupCog, group_name="ap"):
         
         return all_players, game_data
     
+    def _create_connection_message(self, password: str = None) -> dict:
+        """Create a standard Archipelago connection message"""
+        import uuid
+        return {
+            "cmd": "Connect",
+            "game": "",
+            "password": password,
+            "name": "Rhelbot",
+            "version": {"major": 0, "minor": 6, "build": 0, "class": "Version"},
+            "tags": ["Tracker"],
+            "items_handling": 0b000,
+            "uuid": uuid.getnode()
+        }
+
+    async def _connect_to_server(self, server_url: str, timeout: float = 15.0):
+        """Create a websocket connection to the Archipelago server"""
+        return await asyncio.wait_for(
+            websockets.connect(
+                server_url, 
+                ping_interval=20,
+                ping_timeout=10,
+                close_timeout=10,
+                max_size=None,
+                compression="deflate"
+            ),
+            timeout=timeout
+        )
+
     async def fetch_server_data(self, server_url: str = "ws://ap.rhelys.com:38281", password: str = "1440"):
         """Connect to server temporarily to fetch player and game data"""
         try:
             print(f"Attempting to fetch server data from {server_url}")
             
             # Connect to the Archipelago websocket server
-            websocket = await asyncio.wait_for(
-                websockets.connect(
-                    server_url, 
-                    ping_interval=20,
-                    ping_timeout=10,
-                    close_timeout=10,
-                    max_size=None,
-                    compression="deflate"
-                ),
-                timeout=15.0
-            )
+            websocket = await self._connect_to_server(server_url)
             
             try:
                 # Send connection message
-                import uuid
-                connect_msg = {
-                    "cmd": "Connect",
-                    "game": "",
-                    "password": password,
-                    "name": "Rhelbot",
-                    "version": {"major": 0, "minor": 6, "build": 0, "class": "Version"},
-                    "tags": ["Tracker"],
-                    "items_handling": 0b000,
-                    "uuid": uuid.getnode()
-                }
+                connect_msg = self._create_connection_message(password)
                 await websocket.send(json.dumps([connect_msg]))
                 print("Sent connection message for data fetch")
                 
