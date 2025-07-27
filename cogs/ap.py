@@ -399,10 +399,10 @@ class ApCog(commands.GroupCog, group_name="ap"):
             msg_type = msg.get("type", "")
             data = msg.get("data", [])
             
+            # Skip chat messages from players
             if msg_type == "Chat":
-                # Simple text message for chat
-                text = "".join([item.get("text", "") for item in data])
-                await channel.send(f"💬 {text}")
+                print(f"Skipping chat message: {data}")
+                return
                 
             elif msg_type == "ItemSend":
                 # Parse the complex item send message structure
@@ -426,7 +426,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
                         elif item.get("type") == "location_id":
                             location_id = item.get("text")
                     
-                    # Track location check for progress tracking
+                    # Track location check for progress tracking (but don't send message)
                     if sender_id and location_id:
                         sender_id_int = int(sender_id)
                         location_id_int = int(location_id)
@@ -439,51 +439,39 @@ class ApCog(commands.GroupCog, group_name="ap"):
                         self.player_progress[sender_id_int].add(location_id_int)
                         print(f"Tracked location check: Player {sender_id_int} checked location {location_id_int}")
                     
-                    # Only send messages for progression (1) and useful (2) items
-                    if item_flags in [1, 2]:
-                        # Debug logging
-                        print(f"Processing ItemSend: sender_id={sender_id}, recipient_id={recipient_id}, item_id={item_id}, item_flags={item_flags}, location_id={location_id}")
-                        print(f"Available connection data keys: {list(self.connection_data.keys())}")
-                        print(f"Available game data keys: {list(self.game_data.keys())}")
-                        
-                        # Look up actual names using the stored data
-                        sender_name = self.lookup_player_name(int(sender_id))
-                        recipient_name = self.lookup_player_name(int(recipient_id))
-                        
-                        # Get the recipient's game to look up item and location names
-                        recipient_game = self.lookup_player_game(int(recipient_id))
-                        sender_game = self.lookup_player_game(int(sender_id))
-                        
-                        print(f"Looked up: sender={sender_name}, recipient={recipient_name}, recipient_game={recipient_game}, sender_game={sender_game}")
-                        
-                        # Use recipient's game for item lookup, sender's game for location lookup
-                        item_name = self.lookup_item_name(recipient_game, int(item_id))
-                        location_name = self.lookup_location_name(sender_game, int(location_id))
-                        
-                        print(f"Final lookup results: item_name={item_name}, location_name={location_name}")
-                        
-                        # Determine item type emoji based on flags
-                        item_emoji = "🔑" if item_flags == 1 else "🔧"  # progression vs useful
-                        
-                        message = f"{item_emoji} **{sender_name}** sent **{item_name}** to **{recipient_name}**\n📍 From: {location_name}"
-                        await channel.send(message)
+                    # Skip sending messages about player item sends/receives
+                    print(f"Skipping ItemSend message from player {sender_id} to player {recipient_id}")
                         
                 except Exception as e:
                     print(f"Error parsing ItemSend message: {e}")
-                    # Fallback to simple text
-                    text = "".join([item.get("text", "") for item in data])
-                    await channel.send(f"🎯 {text}")
                     
-            elif msg_type in ["ItemReceive", "Hint", "Goal", "Release", "Collect", "Countdown"]:
-                # For other message types, combine the text parts
+            elif msg_type in ["ItemReceive"]:
+                # Skip item receive messages from players
+                print(f"Skipping ItemReceive message: {data}")
+                return
+                    
+            elif msg_type in ["Goal", "Release", "Collect", "Countdown"]:
+                # Keep important game events but not player-specific ones
                 text = "".join([item.get("text", "") for item in data])
                 if text:
                     await channel.send(f"🎯 {text}")
+                    
+            elif msg_type in ["Tutorial", "ServerChat"]:
+                # Keep server messages and tutorials
+                text = "".join([item.get("text", "") for item in data])
+                if text:
+                    await channel.send(f"ℹ️ {text}")
                     
             else:
-                # Generic message handling
+                # For other message types, check if they're player-related before sending
                 text = "".join([item.get("text", "") for item in data])
                 if text:
+                    # Skip messages that appear to be player-related
+                    text_lower = text.lower()
+                    if any(keyword in text_lower for keyword in ["player", "sent", "received", "found", "checked"]):
+                        print(f"Skipping player-related message: {text}")
+                        return
+                    
                     await channel.send(f"ℹ️ {text}")
                 
         elif cmd == "RoomUpdate":
