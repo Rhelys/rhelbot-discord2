@@ -1390,6 +1390,31 @@ class ApCog(commands.GroupCog, group_name="ap"):
                                 return f"Hint(receiving_player={self.receiving_player}, finding_player={self.finding_player}, location={self.location}, item={self.item}, found={self.found}, item_flags={self.item_flags})"
                         
                         return Hint
+                    elif name == 'HintStatus':
+                        # Create a proper HintStatus enum-like class that handles pickle reconstruction
+                        class HintStatus:
+                            NO_HINT = 0
+                            HINT = 1
+                            PRIORITY = 2
+                            AVOID = 3
+                            
+                            def __init__(self, value=0):
+                                self.value = value
+                            
+                            def __new__(cls, value=0):
+                                # Handle both normal construction and pickle reconstruction
+                                obj = object.__new__(cls)
+                                obj.value = value
+                                return obj
+                            
+                            def __reduce__(self):
+                                # Support for pickle
+                                return (self.__class__, (self.value,))
+                            
+                            def __repr__(self):
+                                status_names = {0: 'NO_HINT', 1: 'HINT', 2: 'PRIORITY', 3: 'AVOID'}
+                                return f"HintStatus.{status_names.get(self.value, 'UNKNOWN')}"
+                        return HintStatus
                     else:
                         # For other NetUtils classes, create a generic placeholder
                         class GenericNetUtilsClass:
@@ -1771,6 +1796,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
         try:
             import zlib
             import pickle
+            import io
             
             with open(archipelago_file, 'rb') as f:
                 raw_data = f.read()
@@ -1780,32 +1806,156 @@ class ApCog(commands.GroupCog, group_name="ap"):
             try:
                 skipped_data = raw_data[1:]  # Skip first byte
                 decompressed_data = zlib.decompress(skipped_data)
-                multidata = pickle.loads(decompressed_data)
+                
+                # Use a custom unpickler that can handle missing modules
+                class ArchipelagoUnpickler(pickle.Unpickler):
+                    def find_class(self, module, name):
+                        # Handle missing modules by creating generic placeholders
+                        if module in ['NetUtils', 'worlds', 'BaseClasses']:
+                            # Create a generic class that can hold data
+                            class GenericClass:
+                                def __init__(self, *args, **kwargs):
+                                    # Store all arguments as attributes
+                                    for i, arg in enumerate(args):
+                                        setattr(self, f'arg_{i}', arg)
+                                    for key, value in kwargs.items():
+                                        setattr(self, key, value)
+                                
+                                def __getitem__(self, key):
+                                    # Allow dictionary-like access
+                                    return getattr(self, key, None)
+                                
+                                def __setitem__(self, key, value):
+                                    setattr(self, key, value)
+                                
+                                def get(self, key, default=None):
+                                    return getattr(self, key, default)
+                                
+                                def keys(self):
+                                    return [attr for attr in dir(self) if not attr.startswith('_')]
+                                
+                                def values(self):
+                                    return [getattr(self, attr) for attr in self.keys()]
+                                
+                                def items(self):
+                                    return [(attr, getattr(self, attr)) for attr in self.keys()]
+                                
+                                def __len__(self):
+                                    return len(self.keys())
+                                
+                                def __contains__(self, key):
+                                    return hasattr(self, key)
+                            
+                            return GenericClass
+                        
+                        # For other modules, try to import normally
+                        try:
+                            return super().find_class(module, name)
+                        except (ImportError, AttributeError):
+                            # If we can't import it, create a generic placeholder
+                            class GenericClass:
+                                def __init__(self, *args, **kwargs):
+                                    pass
+                            return GenericClass
+                
+                unpickler = ArchipelagoUnpickler(io.BytesIO(decompressed_data))
+                multidata = unpickler.load()
+                
+                print(f"DEBUG: Successfully parsed .archipelago file, type: {type(multidata)}")
+                
             except Exception as e:
                 print(f"Error parsing .archipelago file: {e}")
                 return 0
             
             # Look for location data in the multidata
-            if isinstance(multidata, dict) and 'locations' in multidata:
-                locations = multidata['locations']
-                if isinstance(locations, dict):
-                    # Check if player_id is a key
-                    if player_id in locations:
-                        player_locations = locations[player_id]
-                        if isinstance(player_locations, (list, dict)):
-                            return len(player_locations)
+            print(f"DEBUG: Looking for location data in multidata")
+            if hasattr(multidata, '__getitem__') or isinstance(multidata, dict):
+                # Try different ways to access the data
+                locations_data = None
+                
+                # Method 1: Direct 'locations' key
+                try:
+                    if 'locations' in multidata:
+                        locations_data = multidata['locations']
+                        print(f"DEBUG: Found 'locations' key, type: {type(locations_data)}")
+                except:
+                    pass
+                
+                # Method 2: Check for location_table or similar
+                if not locations_data:
+                    for key in ['location_table', 'location_tables', 'world_locations']:
+                        try:
+                            if key in multidata:
+                                locations_data = multidata[key]
+                                print(f"DEBUG: Found '{key}' key, type: {type(locations_data)}")
+                                break
+                        except:
+                            continue
+                
+                # Method 3: Look through all keys for location-related data
+                if not locations_data:
+                    try:
+                        if hasattr(multidata, 'keys'):
+                            all_keys = list(multidata.keys())
+                        elif hasattr(multidata, '__dict__'):
+                            all_keys = list(multidata.__dict__.keys())
+                        else:
+                            all_keys = []
+                        
+                        print(f"DEBUG: All keys in multidata: {all_keys}")
+                        
+                        for key in all_keys:
+                            if 'location' in str(key).lower():
+                                try:
+                                    locations_data = multidata[key]
+                                    print(f"DEBUG: Found location-related key '{key}', type: {type(locations_data)}")
+                                    break
+                                except:
+                                    continue
+                    except Exception as e:
+                        print(f"DEBUG: Error examining multidata keys: {e}")
+                
+                # Now try to extract player-specific location count
+                if locations_data:
+                    print(f"DEBUG: Processing locations_data for player {player_id}")
                     
-                    # Also check string keys
-                    str_player_id = str(player_id)
-                    if str_player_id in locations:
-                        player_locations = locations[str_player_id]
-                        if isinstance(player_locations, (list, dict)):
-                            return len(player_locations)
+                    # If locations_data is a dict-like object
+                    if hasattr(locations_data, '__getitem__'):
+                        # Try different player ID formats
+                        for pid in [player_id, str(player_id), (0, player_id)]:
+                            try:
+                                if pid in locations_data:
+                                    player_locations = locations_data[pid]
+                                    if hasattr(player_locations, '__len__'):
+                                        count = len(player_locations)
+                                        print(f"DEBUG: Found {count} locations for player {player_id} using key {pid}")
+                                        return count
+                            except Exception as e:
+                                print(f"DEBUG: Error accessing locations_data[{pid}]: {e}")
+                                continue
+                    
+                    # If locations_data is a list or other iterable
+                    elif hasattr(locations_data, '__len__'):
+                        try:
+                            if len(locations_data) > player_id:
+                                player_locations = locations_data[player_id]
+                                if hasattr(player_locations, '__len__'):
+                                    count = len(player_locations)
+                                    print(f"DEBUG: Found {count} locations for player {player_id} from list index")
+                                    return count
+                        except Exception as e:
+                            print(f"DEBUG: Error accessing locations_data[{player_id}]: {e}")
+                
+                print(f"DEBUG: Could not find location data for player {player_id}")
+            else:
+                print(f"DEBUG: multidata is not dict-like: {type(multidata)}")
             
             return 0
                 
         except Exception as e:
             print(f"Error reading .archipelago file: {e}")
+            import traceback
+            traceback.print_exc()
             return 0
     
     def create_progress_bar(self, percentage: float, length: int = 20) -> str:
@@ -1813,12 +1963,224 @@ class ApCog(commands.GroupCog, group_name="ap"):
         filled_length = int(length * percentage / 100)
         bar = "█" * filled_length + "░" * (length - filled_length)
         return f"[{bar}] {percentage:.1f}%"
+    
+    def is_priority_status(self, status) -> bool:
+        """
+        Determine if a hint status indicates priority.
+        Based on Archipelago's hint status system:
+        - Found hints are always included (handled separately)
+        - Priority hints should be included
+        - "No Priority" and "Avoid" hints should be excluded
+        
+        Status values in Archipelago (from NetUtils.py):
+        - HintStatus.NO_HINT = 0
+        - HintStatus.HINT = 1  
+        - HintStatus.PRIORITY = 2
+        - HintStatus.AVOID = 3
+        """
+        # Handle different status representations
+        if hasattr(status, 'value'):
+            # If it's an enum-like object, get the value
+            status_value = status.value
+        elif isinstance(status, int):
+            # If it's already an integer
+            status_value = status
+        else:
+            # If it's something else, try to convert or default to 0
+            try:
+                status_value = int(status)
+            except (ValueError, TypeError):
+                status_value = 0
+        
+        # Include hints with HINT (1) or PRIORITY (2) status
+        # Exclude NO_HINT (0) and AVOID (3) status
+        return status_value in [1, 2]
+    
+    def get_player_hint_points(self, player_id: int, save_data: dict) -> int:
+        """Get the current hint points for a specific player"""
+        try:
+            # In Archipelago, hint points are calculated as:
+            # total_locations * hint_points_percentage - hints_used * hint_cost
+            # But since we don't have the exact formula, we'll calculate based on available data
+            
+            # Method 1: Check if there's a direct hint_points field in save_data
+            if "hint_points" in save_data:
+                hint_points = save_data["hint_points"]
+                if isinstance(hint_points, dict):
+                    # Check for player-specific hint points
+                    if player_id in hint_points:
+                        return hint_points[player_id]
+                    elif str(player_id) in hint_points:
+                        return hint_points[str(player_id)]
+                    # Check for (team, slot) format
+                    elif (0, player_id) in hint_points:
+                        return hint_points[(0, player_id)]
+            
+            # Method 2: Calculate based on hints_used and checked locations
+            # Based on feedback: hint_points = checked_locations - (hints_used * hint_cost)
+            hints_used_data = save_data.get("hints_used", {})
+            hints_used = 0
+            
+            # Check for hints used by this player
+            if (0, player_id) in hints_used_data:
+                hints_used = hints_used_data[(0, player_id)]
+            elif player_id in hints_used_data:
+                hints_used = hints_used_data[player_id]
+            elif str(player_id) in hints_used_data:
+                hints_used = hints_used_data[str(player_id)]
+            
+            print(f"DEBUG: Player {player_id} has used {hints_used} hints")
+            
+            # Get checked locations for this player
+            location_checks = save_data.get("location_checks", {})
+            checked_locations = 0
+            
+            # Check for checked locations by this player
+            if (0, player_id) in location_checks:
+                checked_locations_set = location_checks[(0, player_id)]
+                checked_locations = len(checked_locations_set) if hasattr(checked_locations_set, '__len__') else 0
+            elif player_id in location_checks:
+                checked_locations_set = location_checks[player_id]
+                checked_locations = len(checked_locations_set) if hasattr(checked_locations_set, '__len__') else 0
+            elif str(player_id) in location_checks:
+                checked_locations_set = location_checks[str(player_id)]
+                checked_locations = len(checked_locations_set) if hasattr(checked_locations_set, '__len__') else 0
+            
+            print(f"DEBUG: Player {player_id} has checked {checked_locations} locations")
+            
+            # Get total locations for this player to calculate hint cost
+            total_locations = self.get_player_total_locations(player_id, save_data)
+            
+            if total_locations > 0:
+                # Calculate hint cost (5% of total locations per hint as we determined earlier)
+                hint_cost = max(10, int(total_locations * 0.05))
+                
+                # Calculate hint points based on the correct formula:
+                # hint_points = checked_locations - (hints_used * hint_cost)
+                remaining_points = checked_locations - (hints_used * hint_cost)
+                
+                print(f"DEBUG: Player {player_id} calculation: {checked_locations} checked - ({hints_used} * {hint_cost}) = {remaining_points}")
+                
+                return max(0, remaining_points)  # Don't return negative points
+            
+            # Method 3: Check multiworld object for hint points
+            if "multiworld" in save_data:
+                multiworld = save_data["multiworld"]
+                if hasattr(multiworld, 'hint_points'):
+                    hint_points = multiworld.hint_points
+                    if hasattr(hint_points, '__getitem__'):
+                        try:
+                            return hint_points[player_id]
+                        except (KeyError, IndexError):
+                            pass
+                
+                # Check for worlds-specific hint points
+                if hasattr(multiworld, 'worlds') and len(multiworld.worlds) > player_id:
+                    world = multiworld.worlds[player_id]
+                    if hasattr(world, 'hint_points'):
+                        return world.hint_points
+            
+            # Method 4: Look for any field containing "hint" and "point"
+            for key, value in save_data.items():
+                if "hint" in key.lower() and "point" in key.lower():
+                    if isinstance(value, dict):
+                        if player_id in value:
+                            return value[player_id]
+                        elif str(player_id) in value:
+                            return value[str(player_id)]
+                        elif (0, player_id) in value:
+                            return value[(0, player_id)]
+            
+            # Default: return 0 if no hint points found
+            print(f"DEBUG: Could not calculate hint points for player {player_id}, returning 0")
+            return 0
+            
+        except Exception as e:
+            print(f"Error getting hint points for player {player_id}: {e}")
+            return 0
+    
+    def get_hint_cost(self, player_id: int, save_data: dict) -> int:
+        """Get the cost of the next hint for a specific player"""
+        try:
+            # Look for hint cost in the save data
+            # Hint cost is typically calculated based on how many hints the player already has
+            
+            # Method 1: Check if there's a hint_cost or similar field in save_data
+            if "hint_cost" in save_data:
+                hint_cost = save_data["hint_cost"]
+                if isinstance(hint_cost, dict):
+                    if player_id in hint_cost:
+                        return hint_cost[player_id]
+                    elif str(player_id) in hint_cost:
+                        return hint_cost[str(player_id)]
+                    elif (0, player_id) in hint_cost:
+                        return hint_cost[(0, player_id)]
+            
+            # Method 2: Check multiworld object for hint cost
+            if "multiworld" in save_data:
+                multiworld = save_data["multiworld"]
+                if hasattr(multiworld, 'hint_cost'):
+                    hint_cost = multiworld.hint_cost
+                    if hasattr(hint_cost, '__getitem__'):
+                        try:
+                            return hint_cost[player_id]
+                        except (KeyError, IndexError):
+                            pass
+                
+                # Check for worlds-specific hint cost
+                if hasattr(multiworld, 'worlds') and len(multiworld.worlds) > player_id:
+                    world = multiworld.worlds[player_id]
+                    if hasattr(world, 'hint_cost'):
+                        return world.hint_cost
+            
+            # Method 3: Calculate hint cost based on existing hints and player's total locations
+            # In Archipelago, hint cost is typically based on the percentage of locations in the player's game
+            # Common formula: (total_locations_in_player_game / 100) * 10, with a minimum cost
+            
+            # Get the total number of locations for this player's game
+            total_locations = self.get_player_total_locations(player_id, save_data)
+            
+            if total_locations > 0:
+                # Calculate cost based on total locations in the player's game
+                # Server is configured to provide a hint for every 5% of available locations
+                # So hint cost = 5% of total locations, with a minimum of 10
+                calculated_cost = max(10, int(total_locations * 0.05))
+                print(f"DEBUG: Calculated hint cost for player {player_id}: {calculated_cost} (5% of {total_locations} total locations)")
+                return calculated_cost
+            else:
+                # Fallback: Count how many hints this player already has and use old formula
+                hints_data = save_data.get("hints", {})
+                player_hint_count = 0
+                
+                for hint_set in hints_data.values():
+                    if isinstance(hint_set, set):
+                        for hint in hint_set:
+                            if hasattr(hint, 'receiving_player') and hint.receiving_player == player_id:
+                                player_hint_count += 1
+                    elif isinstance(hint_set, (list, tuple)):
+                        for hint in hint_set:
+                            if hasattr(hint, 'receiving_player') and hint.receiving_player == player_id:
+                                player_hint_count += 1
+                
+                # Use fallback formula: 10 + (hints_owned * 10)
+                base_cost = 10
+                increment = 10
+                calculated_cost = base_cost + (player_hint_count * increment)
+                print(f"DEBUG: Fallback hint cost calculation for player {player_id}: {calculated_cost} (based on {player_hint_count} existing hints)")
+                return calculated_cost
+            
+        except Exception as e:
+            print(f"Error getting hint cost for player {player_id}: {e}")
+            return 10  # Default cost
 
     @app_commands.command(
         name="hints",
         description="Shows all current hints for key items, grouped by finding player",
     )
-    async def ap_hints(self, interaction: discord.Interaction):
+    @app_commands.describe(
+        player="Optional: Show hints only for a specific player and their hint points/cost"
+    )
+    async def ap_hints(self, interaction: discord.Interaction, player: Optional[str] = None):
         await interaction.response.defer()
         
         # Check if server is running first
@@ -1887,12 +2249,17 @@ class ApCog(commands.GroupCog, group_name="ap"):
                 # Fallback: try to extract basic data from save file
                 all_players, game_data = self.extract_player_data_from_save(save_data)
         
-        # Filter hints for key items only (item_flags = 1) and group by finding player
+        # Filter hints for key items (item_flags = 1) and acceptable statuses
+        # Status filtering: Include "Found" and "Priority", exclude "No Priority" and "Avoid"
+        # Note: For now, including all key item hints since status parsing isn't working correctly
         key_item_hints = []
         for hint in all_hints:
             # Check if this is a Hint object with item_flags = 1 (progression items)
             if hasattr(hint, 'item_flags') and hint.item_flags == 1:
+                # For now, include all key item hints since status filtering isn't working properly
+                # TODO: Fix status parsing to properly filter by priority/found status
                 key_item_hints.append(hint)
+                    
             elif isinstance(hint, (list, tuple)) and len(hint) >= 7:
                 # Handle tuple/list representation
                 item_flags = hint[6] if len(hint) > 6 else 0
@@ -1909,7 +2276,10 @@ class ApCog(commands.GroupCog, group_name="ap"):
                             self.item_flags = data[6] if len(data) > 6 else 0
                             self.status = data[7] if len(data) > 7 else 0
                     
-                    key_item_hints.append(SimpleHint(hint))
+                    simple_hint = SimpleHint(hint)
+                    # Include all key item hints for now
+                    key_item_hints.append(simple_hint)
+                        
             elif isinstance(hint, dict) and hint.get('item_flags', 0) == 1:
                 # Handle dictionary representation
                 class SimpleHint:
@@ -1923,65 +2293,132 @@ class ApCog(commands.GroupCog, group_name="ap"):
                         self.item_flags = data.get('item_flags', 0)
                         self.status = data.get('status', 0)
                 
-                key_item_hints.append(SimpleHint(hint))
+                simple_hint = SimpleHint(hint)
+                # Include all key item hints for now
+                key_item_hints.append(simple_hint)
         
         if not key_item_hints:
             await interaction.followup.send("📝 No hints found for key items in the current game.")
             return
         
-        # Group hints by finding player
-        hints_by_finder = {}
-        for hint in key_item_hints:
-            finding_player = hint.finding_player
-            if finding_player not in hints_by_finder:
-                hints_by_finder[finding_player] = []
-            hints_by_finder[finding_player].append(hint)
-        
-        # Build the hints message
-        hint_lines = []
-        hint_lines.append("🔑 **Key Item Hints**\n")
-        
-        # Sort finding players alphabetically
-        sorted_finders = []
-        for finding_player in hints_by_finder.keys():
-            # Skip Rhelbot
-            player_name = all_players.get(finding_player, {}).get("name", f"Player {finding_player}")
-            if player_name.lower() != "rhelbot":
-                sorted_finders.append((player_name.lower(), finding_player, player_name))
-        
-        sorted_finders.sort(key=lambda x: x[0])
-        
-        for _, finding_player, finder_name in sorted_finders:
-            finder_game = all_players.get(finding_player, {}).get("game", "Unknown")
-            hint_lines.append(f"## {finder_name} ({finder_game})")
+        # If a specific player is requested, filter hints and show hint points/cost
+        if player:
+            # Find the player ID by name (case-insensitive)
+            target_player_id = None
+            target_player_name = None
             
-            # Sort hints for this player by receiving player name
-            player_hints = hints_by_finder[finding_player]
-            sorted_hints = []
-            for hint in player_hints:
-                receiving_player_name = all_players.get(hint.receiving_player, {}).get("name", f"Player {hint.receiving_player}")
-                sorted_hints.append((receiving_player_name.lower(), hint, receiving_player_name))
+            for player_id, player_info in all_players.items():
+                if player_info["name"].lower() == player.lower():
+                    target_player_id = player_id
+                    target_player_name = player_info["name"]
+                    break
             
-            sorted_hints.sort(key=lambda x: x[0])
+            if target_player_id is None:
+                # List available players for reference
+                available_players = [info["name"] for info in all_players.values() if info["name"].lower() != "rhelbot"]
+                await interaction.followup.send(
+                    f"❌ Player '{player}' not found.\n"
+                    f"Available players: {', '.join(available_players)}"
+                )
+                return
             
-            for _, hint, receiving_player_name in sorted_hints:
-                # Look up item and location names
-                receiving_game = all_players.get(hint.receiving_player, {}).get("game", "Unknown")
-                finder_game = all_players.get(hint.finding_player, {}).get("game", "Unknown")
-                
-                # Get item name (from receiving player's game)
-                item_name = self.lookup_item_name(receiving_game, hint.item) if game_data else f"Item {hint.item}"
-                
-                # Get location name (from finding player's game)
-                location_name = self.lookup_location_name(finder_game, hint.location) if game_data else f"Location {hint.location}"
-                
-                # Status indicator
-                status_indicator = " ✅" if hint.found else ""
-                
-                hint_lines.append(f"└ **{item_name}** → {receiving_player_name}")
-                hint_lines.append(f"  📍 *{location_name}* {status_indicator}")
+            # Filter hints for this specific player (as the finding player)
+            player_hints = [hint for hint in key_item_hints if hint.finding_player == target_player_id]
             
-            hint_lines.append("")  # Empty line between players
+            # Get hint points and cost information (always show these)
+            hint_points = self.get_player_hint_points(target_player_id, save_data)
+            hint_cost = self.get_hint_cost(target_player_id, save_data)
+            
+            # Build the message for specific player
+            hint_lines = []
+            hint_lines.append(f"🔑 **Key Item Hints for {target_player_name}**")
+            hint_lines.append(f"💰 **Hint Points**: {hint_points}")
+            hint_lines.append(f"💸 **Next Hint Cost**: {hint_cost}")
+            hint_lines.append("")
+            
+            if not player_hints:
+                hint_lines.append("📝 No hints found for this player.")
+            else:
+                # Sort hints by receiving player name
+                sorted_hints = []
+                for hint in player_hints:
+                    receiving_player_name = all_players.get(hint.receiving_player, {}).get("name", f"Player {hint.receiving_player}")
+                    sorted_hints.append((receiving_player_name.lower(), hint, receiving_player_name))
+                
+                sorted_hints.sort(key=lambda x: x[0])
+                
+                for _, hint, receiving_player_name in sorted_hints:
+                    # Look up item and location names
+                    receiving_game = all_players.get(hint.receiving_player, {}).get("game", "Unknown")
+                    finder_game = all_players.get(hint.finding_player, {}).get("game", "Unknown")
+                    
+                    # Get item name (from receiving player's game)
+                    item_name = self.lookup_item_name(receiving_game, hint.item) if game_data else f"Item {hint.item}"
+                    
+                    # Get location name (from finding player's game)
+                    location_name = self.lookup_location_name(finder_game, hint.location) if game_data else f"Location {hint.location}"
+                    
+                    # Status indicator
+                    status_indicator = " ✅" if hint.found else ""
+                    
+                    hint_lines.append(f"└ **{item_name}** → {receiving_player_name}")
+                    hint_lines.append(f"  📍 *{location_name}* {status_indicator}")
+        
+        else:
+            # Show all players' hints (original behavior)
+            # Group hints by finding player
+            hints_by_finder = {}
+            for hint in key_item_hints:
+                finding_player = hint.finding_player
+                if finding_player not in hints_by_finder:
+                    hints_by_finder[finding_player] = []
+                hints_by_finder[finding_player].append(hint)
+            
+            # Build the hints message
+            hint_lines = []
+            hint_lines.append("🔑 **Key Item Hints**\n")
+            
+            # Sort finding players alphabetically
+            sorted_finders = []
+            for finding_player in hints_by_finder.keys():
+                # Skip Rhelbot
+                player_name = all_players.get(finding_player, {}).get("name", f"Player {finding_player}")
+                if player_name.lower() != "rhelbot":
+                    sorted_finders.append((player_name.lower(), finding_player, player_name))
+            
+            sorted_finders.sort(key=lambda x: x[0])
+            
+            for _, finding_player, finder_name in sorted_finders:
+                finder_game = all_players.get(finding_player, {}).get("game", "Unknown")
+                hint_lines.append(f"## {finder_name} ({finder_game})")
+                
+                # Sort hints for this player by receiving player name
+                player_hints = hints_by_finder[finding_player]
+                sorted_hints = []
+                for hint in player_hints:
+                    receiving_player_name = all_players.get(hint.receiving_player, {}).get("name", f"Player {hint.receiving_player}")
+                    sorted_hints.append((receiving_player_name.lower(), hint, receiving_player_name))
+                
+                sorted_hints.sort(key=lambda x: x[0])
+                
+                for _, hint, receiving_player_name in sorted_hints:
+                    # Look up item and location names
+                    receiving_game = all_players.get(hint.receiving_player, {}).get("game", "Unknown")
+                    finder_game = all_players.get(hint.finding_player, {}).get("game", "Unknown")
+                    
+                    # Get item name (from receiving player's game)
+                    item_name = self.lookup_item_name(receiving_game, hint.item) if game_data else f"Item {hint.item}"
+                    
+                    # Get location name (from finding player's game)
+                    location_name = self.lookup_location_name(finder_game, hint.location) if game_data else f"Location {hint.location}"
+                    
+                    # Status indicator
+                    status_indicator = " ✅" if hint.found else ""
+                    
+                    hint_lines.append(f"└ **{item_name}** → {receiving_player_name}")
+                    hint_lines.append(f"  📍 *{location_name}* {status_indicator}")
+                
+                hint_lines.append("")  # Empty line between players
         
         # Send the hints message
         hints_message = "\n".join(hint_lines)
