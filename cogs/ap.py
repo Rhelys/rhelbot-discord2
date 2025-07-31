@@ -659,7 +659,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
             )
             return
 
-        await apworld.save(f"{self.ap_directory}/worlds/{apworld.filename}")
+        await apworld.save(f"{self.ap_directory}/custom_worlds/{apworld.filename}")
         await interaction.followup.send(
             "File added. If your game requires a patch file to be generated then work with the server owner to ensure "
             "your game will generate successfully"
@@ -762,7 +762,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
         self, interaction: discord.Interaction, apfile: Optional[discord.Attachment]
     ) -> None:
         await interaction.response.send_message(
-            "Attempting to start Archipelago server. This will take 2 minutes"
+            "Attempting to start Archipelago server, hold please...\nError messages will be sent to this channel"
         )
 
         # Clean up existing files - this is a port from the update command later in the file
@@ -806,8 +806,9 @@ class ApCog(commands.GroupCog, group_name="ap"):
             stdout, stderr = await process.communicate()
             
             if process.returncode != 0:
+                error_msg = stderr.decode()[-1500:]  # Show last 1500 characters for most relevant error info
                 await interaction.edit_original_response(
-                    content=f"Generation failed with error: {stderr.decode()}"
+                    content=f"Generation failed with error: {error_msg}"
                 )
                 return
 
@@ -824,9 +825,9 @@ class ApCog(commands.GroupCog, group_name="ap"):
         print(f"Started server process with PID: {self.server_process.pid}")
         await sleep(8)
 
-        await interaction.edit_original_response(
-            content="Archipelago server started.\nServer: ap.rhelys.com\nPort: 38281\nPassword: 1440"
-        )
+        # Keep the server started message simple to avoid character limit issues
+        server_message = "Archipelago server started.\nServer: ap.rhelys.com\nPort: 38281\nPassword: 1440"
+        await interaction.edit_original_response(content=server_message)
 
         with zipfile.ZipFile(
             f"{self.output_directory}/donkey.zip", mode="r"
@@ -845,7 +846,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
                 f"{self.output_directory}/{dirfile}"
             ):
                 with open(f"{self.output_directory}/{dirfile}", "rb") as f:
-                    await interaction.channel.send(
+                    await interaction.followup.send(
                         file=discord.File(f, filename=dirfile)
                     )
 
