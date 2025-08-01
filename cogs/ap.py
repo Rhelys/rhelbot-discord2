@@ -797,20 +797,49 @@ class ApCog(commands.GroupCog, group_name="ap"):
                 )
                 return
             
-            # Start the generation process and wait for it to complete
-            process = await asyncio.create_subprocess_exec(
-                "python", "./Archipelago/Generate.py",
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            stdout, stderr = await process.communicate()
+            # Start the generation process in an interactive window so user can watch progress
+            import time
+            start_time = time.time()
             
-            if process.returncode != 0:
-                error_msg = stderr.decode()[-1500:]  # Show last 1500 characters for most relevant error info
+            # Run the generation in a new interactive command window
+            process = subprocess.Popen([
+                "cmd", "/c", "start", "cmd", "/k", 
+                "python", "./Archipelago/Generate.py", "&&", "pause"
+            ], shell=True)
+            
+            print(f"Started generation process with PID: {process.pid}")
+            
+            # Wait for the process to complete
+            while process.poll() is None:
+                await sleep(5)  # Check every 5 seconds
+            
+            # Check if generation completed successfully by looking for output files
+            import time
+            await sleep(3)  # Give files time to be created
+            
+            output_files = listdir(self.output_directory)
+            zip_files = [f for f in output_files if f.endswith('.zip')]
+            
+            if not zip_files:
                 await interaction.edit_original_response(
-                    content=f"Generation failed with error: {error_msg}"
+                    content="Generation failed - no output file was created. Check the generation window for details."
                 )
                 return
+            
+            # Show final generation completion time
+            final_time = time.time()
+            total_elapsed = final_time - start_time
+            total_minutes = int(total_elapsed // 60)
+            total_seconds = int(total_elapsed % 60)
+            
+            if total_minutes > 0:
+                final_time_str = f"{total_minutes}m {total_seconds}s"
+            else:
+                final_time_str = f"{total_seconds}s"
+            
+            await interaction.edit_original_response(
+                content=f"✅ Generation completed in {final_time_str}! Starting server..."
+            )
 
         outputfile = listdir(self.output_directory)
 
@@ -1345,8 +1374,8 @@ class ApCog(commands.GroupCog, group_name="ap"):
             total_progress_bar = self.create_progress_bar(total_percentage)
             
             progress_lines.append("─" * 40)  # Separator line
-            progress_lines.append("📈 **Total Game Progress**")
-            progress_lines.append(f"└ {total_checked}/{total_locations} locations ({total_percentage:.1f}%)")
+            progress_lines.append("\n📈 **Total Game Progress**")
+            progress_lines.append(f"\n└ {total_checked}/{total_locations} locations ({total_percentage:.1f}%)")
             progress_lines.append(f"└ {total_progress_bar}")
         
         # Send the progress report
