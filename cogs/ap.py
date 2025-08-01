@@ -804,26 +804,62 @@ class ApCog(commands.GroupCog, group_name="ap"):
             # Run the generation in a new interactive command window
             process = subprocess.Popen([
                 "cmd", "/c", "start", "cmd", "/k", 
-                "python", "./Archipelago/Generate.py", "&&", "pause"
+                "python", "./Archipelago/Generate.py"
             ], shell=True)
             
             print(f"Started generation process with PID: {process.pid}")
             
-            # Wait for the process to complete
-            while process.poll() is None:
-                await sleep(5)  # Check every 5 seconds
+            # Wait for generation to complete by monitoring for output files
+            # Since the process launches in a separate window, we can't track it directly
+            generation_timeout = 1200  # 20 minutes timeout
+            check_interval = 10  # Check every 10 seconds
+            elapsed_time = 0
             
-            # Check if generation completed successfully by looking for output files
-            import time
-            await sleep(3)  # Give files time to be created
+            await interaction.edit_original_response(
+                content="🔄 Generation running in interactive window... Monitoring for completion..."
+            )
             
-            output_files = listdir(self.output_directory)
-            zip_files = [f for f in output_files if f.endswith('.zip')]
+            while elapsed_time < generation_timeout:
+                await sleep(check_interval)
+                elapsed_time += check_interval
+                
+                # Check if generation has produced output files
+                try:
+                    output_files = listdir(self.output_directory)
+                    zip_files = [f for f in output_files if f.endswith('.zip')]
+                    
+                    if zip_files:
+                        # Generation completed successfully
+                        break
+                        
+                    # Update progress every 60 seconds
+                    if elapsed_time % 60 == 0:
+                        minutes = elapsed_time // 60
+                        await interaction.edit_original_response(
+                            content=f"🔄 Generation running in interactive window... ({minutes}m elapsed)"
+                        )
+                        
+                except Exception as e:
+                    print(f"Error checking output files: {e}")
+                    continue
+            
+            # Final check for output files
+            try:
+                output_files = listdir(self.output_directory)
+                zip_files = [f for f in output_files if f.endswith('.zip')]
+            except Exception as e:
+                print(f"Error in final file check: {e}")
+                zip_files = []
             
             if not zip_files:
-                await interaction.edit_original_response(
-                    content="Generation failed - no output file was created. Check the generation window for details."
-                )
+                if elapsed_time >= generation_timeout:
+                    await interaction.edit_original_response(
+                        content="❌ Generation timed out after 5 minutes. Check the generation window for details."
+                    )
+                else:
+                    await interaction.edit_original_response(
+                        content="❌ Generation failed - no output file was created. Check the generation window for details."
+                    )
                 return
             
             # Show final generation completion time
