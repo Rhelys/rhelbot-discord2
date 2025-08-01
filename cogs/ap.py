@@ -1318,6 +1318,37 @@ class ApCog(commands.GroupCog, group_name="ap"):
         for _, player_line in player_progress_data:
             progress_lines.append(player_line)
         
+        # Calculate total game progress
+        total_checked = 0
+        total_locations = 0
+        
+        for player_id, player_info in all_players.items():
+            player_name = player_info["name"]
+            
+            # Skip the Rhelbot tracker
+            if player_name.lower() == "rhelbot":
+                continue
+            
+            # Get checked locations for this player
+            checked_locations = location_checks.get((0, player_id), set())
+            checked_count = len(checked_locations)
+            
+            # Get total locations for this player
+            player_total_locations = self.get_player_total_locations(player_id, save_data)
+            
+            total_checked += checked_count
+            total_locations += player_total_locations
+        
+        # Add total progress section
+        if total_locations > 0:
+            total_percentage = (total_checked / total_locations) * 100
+            total_progress_bar = self.create_progress_bar(total_percentage)
+            
+            progress_lines.append("─" * 40)  # Separator line
+            progress_lines.append("📈 **Total Game Progress**")
+            progress_lines.append(f"└ {total_checked}/{total_locations} locations ({total_percentage:.1f}%)")
+            progress_lines.append(f"└ {total_progress_bar}")
+        
         # Send the progress report
         progress_message = "\n".join(progress_lines)
         
