@@ -426,7 +426,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
                         elif item.get("type") == "location_id":
                             location_id = item.get("text")
                     
-                    # Track location check for progress tracking (but don't send message)
+                    # Track location check for progress tracking
                     if sender_id and location_id:
                         sender_id_int = int(sender_id)
                         location_id_int = int(location_id)
@@ -439,8 +439,40 @@ class ApCog(commands.GroupCog, group_name="ap"):
                         self.player_progress[sender_id_int].add(location_id_int)
                         print(f"Tracked location check: Player {sender_id_int} checked location {location_id_int}")
                     
-                    # Skip sending messages about player item sends/receives
-                    print(f"Skipping ItemSend message from player {sender_id} to player {recipient_id}")
+                    # Only send messages for progression items (key items)
+                    # Check both item_flags == 1 and item_flags & 1 (bitwise check for progression flag)
+                    is_progression = (item_flags == 1) or (item_flags is not None and (item_flags & 1) != 0)
+                    
+                    if is_progression and sender_id and recipient_id and item_id and location_id:
+                        # Debug logging
+                        print(f"Processing key ItemSend: sender_id={sender_id}, recipient_id={recipient_id}, item_id={item_id}, item_flags={item_flags}, location_id={location_id}")
+                        
+                        # Look up actual names using the stored data
+                        sender_name = self.lookup_player_name(int(sender_id))
+                        recipient_name = self.lookup_player_name(int(recipient_id))
+                        
+                        # Skip if either player is the Rhelbot tracker
+                        if sender_name.lower() == "rhelbot" or recipient_name.lower() == "rhelbot":
+                            print(f"Skipping ItemSend involving Rhelbot tracker")
+                            return
+                        
+                        # Get the recipient's game to look up item and location names
+                        recipient_game = self.lookup_player_game(int(recipient_id))
+                        sender_game = self.lookup_player_game(int(sender_id))
+                        
+                        # Use recipient's game for item lookup, sender's game for location lookup
+                        item_name = self.lookup_item_name(recipient_game, int(item_id))
+                        location_name = self.lookup_location_name(sender_game, int(location_id))
+                        
+                        # Key item emoji
+                        item_emoji = "🔑"
+                        
+                        message = f"{item_emoji} **{sender_name}** sent **{item_name}** to **{recipient_name}**\n📍 From: {location_name}"
+                        await channel.send(message)
+                    else:
+                        # Skip non-key items
+                        if item_flags is not None:
+                            print(f"Skipping non-key ItemSend (flags={item_flags}) from player {sender_id} to player {recipient_id}")
                         
                 except Exception as e:
                     print(f"Error parsing ItemSend message: {e}")
@@ -457,19 +489,42 @@ class ApCog(commands.GroupCog, group_name="ap"):
                     await channel.send(f"🎯 {text}")
                     
             elif msg_type in ["Tutorial", "ServerChat"]:
-                # Keep server messages and tutorials
+                # Keep server messages and tutorials but filter out join/leave messages
                 text = "".join([item.get("text", "") for item in data])
                 if text:
+                    # Skip join/leave info messages with comprehensive filtering
+                    text_lower = text.lower()
+                    join_leave_keywords = [
+                        "has joined", "has left", "joined the game", "left the game",
+                        "tracking", "client(", "tags:", "connected", "disconnected",
+                        "now tracking", "no longer tracking", "syncing", "sync complete",
+                        "slot data", "connecting", "connection established", "room join",
+                        "player slot", "team #"
+                    ]
+                    
+                    if any(keyword in text_lower for keyword in join_leave_keywords):
+                        print(f"Skipping join/leave message: {text}")
+                        return
+                    
                     await channel.send(f"ℹ️ {text}")
                     
             else:
-                # For other message types, check if they're player-related before sending
+                # For other message types, check if they're player-related or join/leave before sending
                 text = "".join([item.get("text", "") for item in data])
                 if text:
-                    # Skip messages that appear to be player-related
+                    # Skip messages that appear to be player-related or join/leave messages
                     text_lower = text.lower()
-                    if any(keyword in text_lower for keyword in ["player", "sent", "received", "found", "checked"]):
-                        print(f"Skipping player-related message: {text}")
+                    filter_keywords = [
+                        "player", "sent", "received", "found", "checked", 
+                        "has joined", "has left", "joined the game", "left the game",
+                        "tracking", "client(", "connected", "disconnected",
+                        "now tracking", "no longer tracking", "syncing", "sync complete",
+                        "slot data", "connecting", "connection established", "room join",
+                        "player slot", "team #", "tags:", "collecting", "collected"
+                    ]
+                    
+                    if any(keyword in text_lower for keyword in filter_keywords):
+                        print(f"Skipping filtered message: {text}")
                         return
                     
                     await channel.send(f"ℹ️ {text}")
