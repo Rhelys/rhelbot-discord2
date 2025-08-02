@@ -2,6 +2,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 from os import remove, listdir, rename, path
+import os
 import subprocess
 from asyncio import sleep
 import asyncio
@@ -11,6 +12,7 @@ import zipfile
 from typing import Optional, Dict
 from ruyaml import YAML
 import shutil
+from datetime import datetime
 
 donkeyServer = discord.Object(id=591625815528177690)
 
@@ -34,6 +36,30 @@ class ApCog(commands.GroupCog, group_name="ap"):
         
         # Server process tracking
         self.server_process = None
+
+    def resolve_player_name(self, discord_user_id: int, player_input: str):
+        """Resolve 'me' to the Discord user's registered player name, or return the input as-is."""
+        if player_input.lower() == "me":
+            # Load game status to get Discord user mapping
+            status_file = "game_status.json"
+            if os.path.exists(status_file):
+                try:
+                    with open(status_file, 'r') as f:
+                        game_status = json.load(f)
+                    
+                    discord_users = game_status.get("discord_users", {})
+                    user_id = str(discord_user_id)
+                    
+                    if user_id in discord_users:
+                        return discord_users[user_id]
+                    else:
+                        return None  # User hasn't joined the game
+                except (json.JSONDecodeError, IOError):
+                    return None
+            else:
+                return None  # No game status file
+        else:
+            return player_input
 
     # Config section - To be updated if anything moves around, or it's going to be run by someone else
     output_directory = "./Archipelago/output/"
@@ -750,52 +776,113 @@ class ApCog(commands.GroupCog, group_name="ap"):
     ) -> None:
         await interaction.response.defer()
 
+        if not playerfile.filename.endswith(".yaml"):
+            await interaction.followup.send(
+                f"File supplied is not a yaml file. Check that you uploaded the "
+                f"correct file and try again"
+            )
+            return
+
+        await interaction.followup.send("Processing file")
+
+        filepath = f"./Archipelago/players/{playerfile.filename}"
+        await playerfile.save(filepath)
+
         try:
-            current_players = self.list_players()
-        except AttributeError:
-            print("No players yet")
-
-        if playerfile.filename.endswith(".yaml"):
-            await interaction.followup.send("Processing file")
-
-            filepath = f"./Archipelago/players/{playerfile.filename}"
-            await playerfile.save(filepath)
-
-            # Pulling out the player name and their game from the submitted yaml file
-            # Todo - Add the game each person is playing to the status file
+            # Parse the YAML file to get player name and game
             with open(filepath, "r", encoding="utf-8") as playeryaml:
                 yaml_object = YAML(typ="safe", pure=True)
                 raw_data = yaml_object.load_all(playeryaml)
                 data_list = list(raw_data)
 
-                # Setting the metadata for the rest of the comparisons from the submitted file
+                player_name = None
+                game_name = None
+                
+                # Extract player name and game from the YAML
                 for element in data_list:
-                    self.player = element.get("name")
-                    self.game = element.get("game")
+                    player_name = element.get("name")
+                    game_name = element.get("game")
+                    break
 
-            if self.player in current_players:
-                if filepath == current_players[self.player]:
+                if not player_name:
+                    await interaction.channel.send("YAML file must contain a player 'name' field.")
+                    remove(filepath)
+                    return
+
+                # Disallow "me" as a player name
+                if player_name.lower() == "me":
+                    await interaction.channel.send("Player name cannot be 'me'. Please choose a different name.")
+                    remove(filepath)
+                    return
+
+            # Load or create game status
+            status_file = "game_status.json"
+            if os.path.exists(status_file):
+                try:
+                    with open(status_file, 'r') as f:
+                        game_status = json.load(f)
+                except (json.JSONDecodeError, IOError):
+                    game_status = {"players": {}, "discord_users": {}}
+            else:
+                game_status = {"players": {}, "discord_users": {}}
+
+            # Ensure required keys exist
+            if "players" not in game_status:
+                game_status["players"] = {}
+            if "discord_users" not in game_status:
+                game_status["discord_users"] = {}
+
+            # Check if player already exists
+            if player_name in game_status["players"]:
+                existing_discord_user = None
+                # Find which Discord user owns this player
+                for discord_id, mapped_player in game_status["discord_users"].items():
+                    if mapped_player == player_name:
+                        existing_discord_user = discord_id
+                        break
+                
+                # If the same Discord user is updating their file, allow it
+                if existing_discord_user == str(interaction.user.id):
+                    game_status["players"][player_name] = {
+                        "filepath": filepath,
+                        "game": game_name,
+                        "joined_at": datetime.now().isoformat(),
+                        "updated_at": datetime.now().isoformat()
+                    }
+                    
+                    # Save updated game status
+                    with open(status_file, 'w') as f:
+                        json.dump(game_status, f, indent=2)
+                    
                     await self.upload_success(filepath, interaction)
                 else:
-                    # Todo - setup the secondary edit https://stackoverflow.com/questions/75009840/how-i-can-edit
-                    #  -followup-message-discord-py
                     await interaction.channel.send(
-                        f"{self.player} already exists in another file. "
-                        "Remove the second file before submitting again"
+                        f"{player_name} already exists and belongs to another user. "
+                        "Choose a different player name."
                     )
                     remove(filepath)
-
+                    return
             else:
+                # New player - add to game status
+                game_status["players"][player_name] = {
+                    "filepath": filepath,
+                    "game": game_name,
+                    "joined_at": datetime.now().isoformat()
+                }
+                
+                # Record Discord user to player mapping
+                game_status["discord_users"][str(interaction.user.id)] = player_name
+                
+                # Save updated game status
+                with open(status_file, 'w') as f:
+                    json.dump(game_status, f, indent=2)
+                
                 await self.upload_success(filepath, interaction)
-                with open("game_status.txt", "a+") as status_file:
-                    capital_player = self.player.capitalize()
-                    status_file.write(f"{capital_player}:{filepath}\n")
 
-        else:
-            await interaction.followup.send(
-                f"File supplied is not a yaml file. Check that you uploaded the "
-                f"correct file and try again"
-            )
+        except Exception as e:
+            await interaction.channel.send(f"Error processing YAML file: {str(e)}")
+            if os.path.exists(filepath):
+                remove(filepath)
 
     """
     /ap start - Generates the game files from uploaded player files and then starts the server. Optionally
@@ -1145,45 +1232,82 @@ class ApCog(commands.GroupCog, group_name="ap"):
 
     @app_commands.command(
         name="leave",
-        description="Deletes player's file from the staged files. "
-        " Returns list of current players without a selection.",
+        description="Deletes player's file from the staged files. Use 'me' to remove yourself.",
     )
-    @app_commands.describe(player="Removes yaml file for selected player from the game")
+    @app_commands.describe(player="Removes yaml file for selected player from the game or use 'me' to remove yourself")
     async def ap_leave(self, interaction: discord.Interaction, player: str):
-        file_lines = []
-        player_dict = self.list_players()
+        await interaction.response.defer()
+
+        # Resolve "me" to actual player name
+        resolved_name = self.resolve_player_name(interaction.user.id, player)
+        if resolved_name is None and player.lower() == "me":
+            await interaction.followup.send("You haven't joined the game yet.")
+            return
+        elif resolved_name is None:
+            resolved_name = player
+
+        # Load game status
+        status_file = "game_status.json"
+        if not os.path.exists(status_file):
+            await interaction.followup.send("No game status found.")
+            return
+
+        try:
+            with open(status_file, 'r') as f:
+                game_status = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            await interaction.followup.send("Error reading game status file.")
+            return
+
+        players = game_status.get("players", {})
+        discord_users = game_status.get("discord_users", {})
 
         if player.lower() == "all":
-            for player_line in player_dict:
-                remove(player_dict[player_line])
+            # Remove all player files
+            for player_name, player_info in players.items():
+                filepath = player_info.get("filepath")
+                if filepath and os.path.exists(filepath):
+                    remove(filepath)
 
-            remove(self.status_file)
+            # Clear the game status
+            game_status = {"players": {}, "discord_users": {}}
+            
+            with open(status_file, 'w') as f:
+                json.dump(game_status, f, indent=2)
 
-            with open(self.status_file, "x") as file:
-                await interaction.response.send_message(
-                    f"All player files have been deleted"
-                )
+            await interaction.followup.send("All player files have been deleted")
+            return
 
+        # Remove specific player
+        if resolved_name in players:
+            player_info = players[resolved_name]
+            filepath = player_info.get("filepath")
+            
+            # Remove the player file if it exists
+            if filepath and os.path.exists(filepath):
+                remove(filepath)
+            
+            # Remove from players
+            del players[resolved_name]
+            
+            # Remove from discord_users mapping
+            user_id_to_remove = None
+            for user_id, mapped_player in discord_users.items():
+                if mapped_player == resolved_name:
+                    user_id_to_remove = user_id
+                    break
+            if user_id_to_remove:
+                del discord_users[user_id_to_remove]
+            
+            # Save updated game status
+            with open(status_file, 'w') as f:
+                json.dump(game_status, f, indent=2)
+            
+            display_name = "You have" if player.lower() == "me" else f"Player '{resolved_name}' has"
+            await interaction.followup.send(f"{display_name} left the game.")
         else:
-            try:
-                remove(player_dict[player.capitalize()])
-            except KeyError:
-                await interaction.response.send_message(
-                    f"{player.capitalize()} is not in the game. Check current players with /ap status"
-                )
-                return
-
-            with open(self.status_file, "r") as player_list:
-                file_lines = player_list.readlines()
-
-            with open(self.status_file, "w") as player_list:
-                for line in file_lines:
-                    if not line.startswith(player.capitalize()):
-                        player_list.write(line)
-
-            await interaction.response.send_message(
-                f"{player.capitalize()}'s file has been deleted"
-            )
+            display_name = "you are" if player.lower() == "me" else f"player '{resolved_name}' is"
+            await interaction.followup.send(f"Player not found - {display_name} not in the game.")
 
     @app_commands.command(
         name="stop",
@@ -1330,9 +1454,10 @@ class ApCog(commands.GroupCog, group_name="ap"):
 
     @app_commands.command(
         name="progress",
-        description="Shows location check progress for all players in the current game",
+        description="Shows location check progress for all players in the current game. Use 'me' for your own progress.",
     )
-    async def ap_progress(self, interaction: discord.Interaction):
+    @app_commands.describe(player="Optional: Show progress for a specific player or use 'me' for your own progress")
+    async def ap_progress(self, interaction: discord.Interaction, player: Optional[str] = None):
         await interaction.response.defer()
         
         # Check if server is running first
