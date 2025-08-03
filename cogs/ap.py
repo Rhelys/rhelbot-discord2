@@ -40,13 +40,13 @@ class ApCog(commands.GroupCog, group_name="ap"):
         try:
             with open("server_password.txt", "r", encoding="utf-8") as f:
                 password = f.read().strip()
+                if not password:
+                    raise ValueError("server_password.txt file is empty")
                 return password
         except FileNotFoundError:
-            print("Warning: server_password.txt not found, trying default password '1440'")
-            return "1440"
+            raise FileNotFoundError("server_password.txt file not found")
         except Exception as e:
-            print(f"Error reading server_password.txt: {e}, trying default password '1440'")
-            return "1440"
+            raise Exception(f"Error reading server_password.txt: {e}")
 
     def resolve_player_name(self, discord_user_id: int, player_input: str):
         """Resolve 'me' to the Discord user's registered player name, or return the input as-is."""
@@ -630,7 +630,11 @@ class ApCog(commands.GroupCog, group_name="ap"):
         
         if not server_url:
             server_url = "ws://ap.rhelys.com:38281"  # Default server URL
-            password = self.get_server_password()  # Read password from file
+            try:
+                password = self.get_server_password()  # Read password from file
+            except Exception as e:
+                await interaction.followup.send(f"❌ Server password error: {str(e)}")
+                return
 
         if not channel_id:
             channel_id = str(interaction.channel.id)  # Default to current channel
@@ -1044,9 +1048,15 @@ class ApCog(commands.GroupCog, group_name="ap"):
         await sleep(8)
 
         # Keep the server started message simple to avoid character limit issues
-        server_password = self.get_server_password()
-        server_message = f"Archipelago server started.\nServer: ap.rhelys.com\nPort: 38281\nPassword: {server_password}"
-        await interaction.edit_original_response(content=server_message)
+        try:
+            server_password = self.get_server_password()
+            server_message = f"Archipelago server started.\nServer: ap.rhelys.com\nPort: 38281\nPassword: {server_password}"
+            await interaction.edit_original_response(content=server_message)
+        except Exception as e:
+            await interaction.edit_original_response(
+                content=f"✅ Archipelago server started.\n❌ Server password error: {str(e)}\n"
+                        "Server: ap.rhelys.com\nPort: 38281"
+            )
 
         with zipfile.ZipFile(
             f"{self.output_directory}/donkey.zip", mode="r"
@@ -1454,11 +1464,18 @@ class ApCog(commands.GroupCog, group_name="ap"):
             print(f"Restarted server process with PID: {self.server_process.pid}")
             await sleep(8)  # Give server time to start
             
-            server_password = self.get_server_password()
-            await interaction.edit_original_response(
-                content="✅ Archipelago server restarted successfully!\n"
-                        f"Server: ap.rhelys.com\nPort: 38281\nPassword: {server_password}"
-            )
+            try:
+                server_password = self.get_server_password()
+                await interaction.edit_original_response(
+                    content="✅ Archipelago server restarted successfully!\n"
+                            f"Server: ap.rhelys.com\nPort: 38281\nPassword: {server_password}"
+                )
+            except Exception as e:
+                await interaction.edit_original_response(
+                    content="✅ Archipelago server restarted successfully!\n"
+                            f"❌ Server password error: {str(e)}\n"
+                            "Server: ap.rhelys.com\nPort: 38281"
+                )
             
         except Exception as e:
             await interaction.edit_original_response(
@@ -1871,7 +1888,11 @@ class ApCog(commands.GroupCog, group_name="ap"):
             
             # If no password provided, read from file
             if password is None:
-                password = self.get_server_password()
+                try:
+                    password = self.get_server_password()
+                except Exception as e:
+                    print(f"Error reading server password: {e}")
+                    return None
             
             # Connect to the Archipelago websocket server
             websocket = await self._connect_to_server(server_url)
