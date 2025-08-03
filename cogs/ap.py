@@ -16,8 +16,6 @@ from datetime import datetime
 
 donkeyServer = discord.Object(id=591625815528177690)
 
-# Learning from https://github.com/Quasky/bridgeipelago/blob/main/bridgeipelago.py
-
 @app_commands.guilds(donkeyServer)
 class ApCog(commands.GroupCog, group_name="ap"):
     def __init__(self, bot: commands.Bot) -> None:
@@ -36,6 +34,19 @@ class ApCog(commands.GroupCog, group_name="ap"):
         
         # Server process tracking
         self.server_process = None
+
+    def get_server_password(self) -> str:
+        """Read the server password from server_password.txt file"""
+        try:
+            with open("server_password.txt", "r", encoding="utf-8") as f:
+                password = f.read().strip()
+                return password
+        except FileNotFoundError:
+            print("Warning: server_password.txt not found, trying default password '1440'")
+            return "1440"
+        except Exception as e:
+            print(f"Error reading server_password.txt: {e}, trying default password '1440'")
+            return "1440"
 
     def resolve_player_name(self, discord_user_id: int, player_input: str):
         """Resolve 'me' to the Discord user's registered player name, or return the input as-is."""
@@ -606,7 +617,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
     @app_commands.describe(
         server_url="Archipelago server websocket URL (e.g., ws://ap.rhelys.com:38281)",
         channel_id="Discord channel ID to send messages to",
-        password="Optional server password. Enter 'null' if no password is needed (default: '1440')"
+        password="Optional server password. Enter 'null' if no password is needed (default: read from server_password.txt)"
     )
     async def ap_track(
         self, 
@@ -619,7 +630,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
         
         if not server_url:
             server_url = "ws://ap.rhelys.com:38281"  # Default server URL
-            password = "1440"  # Default password
+            password = self.get_server_password()  # Read password from file
 
         if not channel_id:
             channel_id = str(interaction.channel.id)  # Default to current channel
@@ -1033,7 +1044,8 @@ class ApCog(commands.GroupCog, group_name="ap"):
         await sleep(8)
 
         # Keep the server started message simple to avoid character limit issues
-        server_message = "Archipelago server started.\nServer: ap.rhelys.com\nPort: 38281\nPassword: 1440"
+        server_password = self.get_server_password()
+        server_message = f"Archipelago server started.\nServer: ap.rhelys.com\nPort: 38281\nPassword: {server_password}"
         await interaction.edit_original_response(content=server_message)
 
         with zipfile.ZipFile(
@@ -1442,9 +1454,10 @@ class ApCog(commands.GroupCog, group_name="ap"):
             print(f"Restarted server process with PID: {self.server_process.pid}")
             await sleep(8)  # Give server time to start
             
+            server_password = self.get_server_password()
             await interaction.edit_original_response(
                 content="✅ Archipelago server restarted successfully!\n"
-                        "Server: ap.rhelys.com\nPort: 38281\nPassword: 1440"
+                        f"Server: ap.rhelys.com\nPort: 38281\nPassword: {server_password}"
             )
             
         except Exception as e:
@@ -1851,10 +1864,14 @@ class ApCog(commands.GroupCog, group_name="ap"):
             timeout=timeout
         )
 
-    async def fetch_server_data(self, server_url: str = "ws://ap.rhelys.com:38281", password: str = "1440"):
+    async def fetch_server_data(self, server_url: str = "ws://ap.rhelys.com:38281", password: str = None):
         """Connect to server temporarily to fetch player and game data"""
         try:
             print(f"Attempting to fetch server data from {server_url}")
+            
+            # If no password provided, read from file
+            if password is None:
+                password = self.get_server_password()
             
             # Connect to the Archipelago websocket server
             websocket = await self._connect_to_server(server_url)
