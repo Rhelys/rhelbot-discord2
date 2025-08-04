@@ -2686,6 +2686,9 @@ class ApCog(commands.GroupCog, group_name="ap"):
             # Filter hints for this specific player (as the finding player)
             player_hints = [hint for hint in key_item_hints if hint.finding_player == target_player_id]
             
+            # Filter hints requested by this player (as the receiving player)
+            requested_hints = [hint for hint in key_item_hints if hint.receiving_player == target_player_id]
+            
             # Get hint points and cost information (always show these)
             hint_points = self.get_player_hint_points(target_player_id, save_data)
             hint_cost = self.get_hint_cost(target_player_id, save_data)
@@ -2697,8 +2700,10 @@ class ApCog(commands.GroupCog, group_name="ap"):
             hint_lines.append(f"💸 **Next Hint Cost**: {hint_cost}")
             hint_lines.append("")
             
+            # Section 1: Hints this player has found for others
+            hint_lines.append("## 🔍 **Hint Locations for Others**")
             if not player_hints:
-                hint_lines.append("📝 No hints found for this player.")
+                hint_lines.append("📝 No hints found by this player.")
             else:
                 # Sort hints by receiving player name
                 sorted_hints = []
@@ -2723,6 +2728,38 @@ class ApCog(commands.GroupCog, group_name="ap"):
                     status_indicator = " ✅" if hint.found else ""
                     
                     hint_lines.append(f"└ **{item_name}** → {receiving_player_name}")
+                    hint_lines.append(f"  📍 *{location_name}* {status_indicator}")
+            
+            hint_lines.append("")  # Empty line between sections
+            
+            # Section 2: Hints this player has requested from others
+            hint_lines.append("## 🎯 **Hints Requested from Others**")
+            if not requested_hints:
+                hint_lines.append("📝 No hints requested by this player.")
+            else:
+                # Sort hints by finding player name
+                sorted_requested_hints = []
+                for hint in requested_hints:
+                    finding_player_name = all_players.get(hint.finding_player, {}).get("name", f"Player {hint.finding_player}")
+                    sorted_requested_hints.append((finding_player_name.lower(), hint, finding_player_name))
+                
+                sorted_requested_hints.sort(key=lambda x: x[0])
+                
+                for _, hint, finding_player_name in sorted_requested_hints:
+                    # Look up item and location names
+                    receiving_game = all_players.get(hint.receiving_player, {}).get("game", "Unknown")
+                    finder_game = all_players.get(hint.finding_player, {}).get("game", "Unknown")
+                    
+                    # Get item name (from receiving player's game)
+                    item_name = self.lookup_item_name(receiving_game, hint.item) if game_data else f"Item {hint.item}"
+                    
+                    # Get location name (from finding player's game)
+                    location_name = self.lookup_location_name(finder_game, hint.location) if game_data else f"Location {hint.location}"
+                    
+                    # Status indicator
+                    status_indicator = " ✅" if hint.found else ""
+                    
+                    hint_lines.append(f"└ **{item_name}** ← {finding_player_name}")
                     hint_lines.append(f"  📍 *{location_name}* {status_indicator}")
         
         else:
