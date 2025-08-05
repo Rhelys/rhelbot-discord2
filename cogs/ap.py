@@ -2,10 +2,9 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 from os import remove, listdir, rename, path
-import os
 import subprocess
-from asyncio import sleep
 import asyncio
+from asyncio import sleep
 import websockets
 import json
 import zipfile
@@ -13,72 +12,59 @@ from typing import Optional, Dict
 from ruyaml import YAML
 import shutil
 from datetime import datetime
+import uuid
+import io
+import zlib
+import pickle
+from collections import namedtuple
+import re
+
+# Import all helper functions
+from helpers.data_helpers import *
+from helpers.lookup_helpers import *
+from helpers.server_helpers import *
+from helpers.formatting_helpers import *
+from helpers.progress_helpers import *
 
 donkeyServer = discord.Object(id=591625815528177690)
 
 @app_commands.guilds(donkeyServer)
 class ApCog(commands.GroupCog, group_name="ap"):
+    # Class constants
+    OUTPUT_DIR = "./Archipelago/output/"
+    AP_DIR = "./Archipelago/"
+    SYSTEM_EXTENSIONS = [".archipelago", ".txt", ".apsave"]
+    STATUS_FILE = "./game_status.txt"
+    DEFAULT_SERVER_URL = "ws://ap.rhelys.com:38281"
+    
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
-        super().__init__()  # this is now required in this context.
+        super().__init__()
         
-        # Websocket tracking variables
-        self.active_connections: Dict[str, Dict] = {}  # server_url -> {task, channel_id, websocket}
-        
-        # Data storage for lookups
-        self.game_data: Dict[str, Dict] = {}  # game_name -> {item_name_to_id, location_name_to_id}
-        self.connection_data: Dict[str, Dict] = {}  # server_url -> {slot_info, etc}
-        
-        # Progress tracking for each player
-        self.player_progress: Dict[int, set] = {}  # player_id -> set of checked location_ids
-        
-        # Server process tracking
+        # Tracking variables
+        self.active_connections: Dict[str, Dict] = {}
+        self.game_data: Dict[str, Dict] = {}
+        self.connection_data: Dict[str, Dict] = {}
+        self.player_progress: Dict[int, set] = {}
         self.server_process = None
-
-    def get_server_password(self) -> str:
-        """Read the server password from server_password.txt file"""
-        try:
-            with open("server_password.txt", "r", encoding="utf-8") as f:
-                password = f.read().strip()
-                if not password:
-                    raise ValueError("server_password.txt file is empty")
-                return password
-        except FileNotFoundError:
-            raise FileNotFoundError("server_password.txt file not found")
-        except Exception as e:
-            raise Exception(f"Error reading server_password.txt: {e}")
+        self.player = ""
+        self.game = ""
 
     def resolve_player_name(self, discord_user_id: int, player_input: str):
         """Resolve 'me' to the Discord user's registered player name, or return the input as-is."""
-        if player_input.lower() == "me":
-            # Load game status to get Discord user mapping
-            status_file = "game_status.json"
-            if os.path.exists(status_file):
-                try:
-                    with open(status_file, 'r') as f:
-                        game_status = json.load(f)
-                    
-                    discord_users = game_status.get("discord_users", {})
-                    user_id = str(discord_user_id)
-                    
-                    if user_id in discord_users:
-                        return discord_users[user_id]
-                    else:
-                        return None  # User hasn't joined the game
-                except (json.JSONDecodeError, IOError):
-                    return None
-            else:
-                return None  # No game status file
-        else:
+        if player_input.lower() != "me":
             return player_input
-
-    # Config section - To be updated if anything moves around, or it's going to be run by someone else
-    output_directory = "./Archipelago/output/"
-    ap_directory = "./Archipelago/"
-    system_extensions = [".archipelago", ".txt", ".apsave"]
-    status_file = "./game_status.txt"
-    player = ""
-    game = ""
+            
+        status_file = "game_status.json"
+        if not path.exists(status_file):
+            return None
+            
+        try:
+            with open(status_file, 'r') as f:
+                game_status = json.load(f)
+            return game_status.get("discord_users", {}).get(str(discord_user_id))
+        except (json.JSONDecodeError, IOError):
+            return None
 
     async def upload_success(self, filepath: str, interaction: discord.Interaction):
         with open(filepath, "rb") as submitted_file:
@@ -313,84 +299,21 @@ class ApCog(commands.GroupCog, group_name="ap"):
         if server_url in self.active_connections:
             del self.active_connections[server_url]
 
-    def _lookup_in_mapping(self, mapping: dict, lookup_id: int, mapping_name: str) -> str:
-        """Generic lookup function for ID to name mappings"""
-        for name, id_value in mapping.items():
-            if str(id_value) == str(lookup_id):
-                print(f"Found match: {name}")
-                return name
-        return None
-
     def lookup_item_name(self, game: str, item_id: int) -> str:
         """Look up item name from ID using game data"""
-        print(f"Looking up item: game='{game}', item_id={item_id}")
-        
-        if not self.game_data:
-            print("No game data available")
-            return f"Item {item_id}"
-            
-        if game not in self.game_data:
-            print(f"Game '{game}' not found in game data. Available games: {list(self.game_data.keys())}")
-            return f"Item {item_id}"
-        
-        game_data = self.game_data[game]
-        if "item_name_to_id" not in game_data:
-            print(f"No item_name_to_id in game data for '{game}'. Available keys: {list(game_data.keys())}")
-            return f"Item {item_id}"
-        
-        item_mapping = game_data["item_name_to_id"]
-        print(f"Searching through {len(item_mapping)} items for ID {item_id}")
-        
-        result = self._lookup_in_mapping(item_mapping, item_id, "item")
-        if result:
-            return result
-        
-        print(f"No match found for item ID {item_id}")
-        return f"Item {item_id}"
+        return lookup_item_name(game, item_id, self.game_data)
     
     def lookup_location_name(self, game: str, location_id: int) -> str:
         """Look up location name from ID using game data"""
-        print(f"Looking up location: game='{game}', location_id={location_id}")
-        
-        if not self.game_data:
-            print("No game data available")
-            return f"Location {location_id}"
-            
-        if game not in self.game_data:
-            print(f"Game '{game}' not found in game data. Available games: {list(self.game_data.keys())}")
-            return f"Location {location_id}"
-        
-        game_data = self.game_data[game]
-        if "location_name_to_id" not in game_data:
-            print(f"No location_name_to_id in game data for '{game}'. Available keys: {list(game_data.keys())}")
-            return f"Location {location_id}"
-        
-        location_mapping = game_data["location_name_to_id"]
-        print(f"Searching through {len(location_mapping)} locations for ID {location_id}")
-        
-        result = self._lookup_in_mapping(location_mapping, location_id, "location")
-        if result:
-            return result
-        
-        print(f"No match found for location ID {location_id}")
-        return f"Location {location_id}"
-    
-    def _lookup_player_info(self, player_id: int, info_key: str, default_value: str) -> str:
-        """Generic function to look up player information from connection data"""
-        for server_url, conn_data in self.connection_data.items():
-            slot_info = conn_data.get("slot_info", {})
-            for slot_id, player_info in slot_info.items():
-                if str(slot_id) == str(player_id):
-                    return player_info.get(info_key, default_value)
-        return default_value
+        return lookup_location_name(game, location_id, self.game_data)
     
     def lookup_player_name(self, player_id: int) -> str:
         """Look up player name from ID using connection data"""
-        return self._lookup_player_info(player_id, "name", f"Player {player_id}")
+        return lookup_player_name(player_id, self.connection_data)
     
     def lookup_player_game(self, player_id: int) -> str:
         """Look up player's game from ID using connection data"""
-        return self._lookup_player_info(player_id, "game", "Unknown")
+        return lookup_player_game(player_id, self.connection_data)
 
     async def process_ap_message(self, msg: dict, channel):
         """Process and format Archipelago messages for Discord"""
@@ -631,7 +554,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
         if not server_url:
             server_url = "ws://ap.rhelys.com:38281"  # Default server URL
             try:
-                password = self.get_server_password()  # Read password from file
+                password = get_server_password()  # Read password from file
             except Exception as e:
                 await interaction.followup.send(f"❌ Server password error: {str(e)}")
                 return
@@ -1049,7 +972,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
 
         # Keep the server started message simple to avoid character limit issues
         try:
-            server_password = self.get_server_password()
+            server_password = get_server_password()
             server_message = f"Archipelago server started.\nServer: ap.rhelys.com\nPort: 38281\nPassword: {server_password}"
             await interaction.edit_original_response(content=server_message)
         except Exception as e:
@@ -1498,7 +1421,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
             return
         
         # Try to load progress from .apsave file
-        save_data = self.load_apsave_data()
+        save_data = load_apsave_data(self.output_directory, self.ap_directory)
         if not save_data:
             await interaction.followup.send("❌ Could not load save data. Make sure the Archipelago server has a save file.")
             return
@@ -1651,55 +1574,6 @@ class ApCog(commands.GroupCog, group_name="ap"):
         else:
             await interaction.followup.send(progress_message)
     
-    def load_apsave_data(self):
-        """Load and parse the .apsave file to get current game state"""
-        import pickle
-        import zlib
-        import sys
-        from pathlib import Path
-        
-        # Look for .apsave files in the output directory
-        output_path = Path(self.output_directory)
-        apsave_files = list(output_path.glob("*.apsave"))
-        
-        if not apsave_files:
-            print("No .apsave files found in output directory")
-            return None
-        
-        # Use the most recent .apsave file
-        apsave_file = max(apsave_files, key=lambda f: f.stat().st_mtime)
-        
-        try:
-            # Add the Archipelago directory to Python path temporarily
-            archipelago_path = str(Path(self.ap_directory).resolve())
-            if archipelago_path not in sys.path:
-                sys.path.insert(0, archipelago_path)
-            
-            try:
-                with open(apsave_file, 'rb') as f:
-                    compressed_data = f.read()
-                
-                # Decompress and unpickle the save data
-                decompressed_data = zlib.decompress(compressed_data)
-                save_data = pickle.loads(decompressed_data)
-                
-                print(f"Successfully loaded save data from {apsave_file}")
-                return save_data
-                
-            finally:
-                # Remove the Archipelago path from sys.path
-                if archipelago_path in sys.path:
-                    sys.path.remove(archipelago_path)
-            
-        except Exception as e:
-            print(f"Error loading .apsave file {apsave_file}: {e}")
-            
-            # Try alternative approach: parse the raw data structure
-            try:
-                return self.parse_apsave_alternative(apsave_file)
-            except Exception as alt_e:
-                print(f"Alternative parsing also failed: {alt_e}")
-                return None
     
     def parse_apsave_alternative(self, apsave_file):
         """Alternative method to parse .apsave file without full Archipelago dependencies"""
@@ -1984,555 +1858,20 @@ class ApCog(commands.GroupCog, group_name="ap"):
             print(f"Error fetching server data: {e}")
             return None
     
-    def get_player_total_locations(self, player_id: int, save_data: dict) -> int:
-        """Get the actual total number of locations for a specific player from the multiworld data"""
-        try:
-            print(f"DEBUG: Attempting to get total locations for player {player_id}")
-            print(f"DEBUG: Available save_data keys: {list(save_data.keys())}")
-            
-            # Method 1: Check the multiworld object for location data
-            if "multiworld" in save_data:
-                multiworld = save_data["multiworld"]
-                print(f"DEBUG: Found multiworld object, type: {type(multiworld)}")
-                print(f"DEBUG: Multiworld attributes: {[attr for attr in dir(multiworld) if not attr.startswith('_')]}")
-                
-                try:
-                    # Try to access worlds array
-                    if hasattr(multiworld, 'worlds'):
-                        print(f"DEBUG: Found worlds attribute, length: {len(multiworld.worlds) if hasattr(multiworld.worlds, '__len__') else 'unknown'}")
-                        if len(multiworld.worlds) > player_id:
-                            world = multiworld.worlds[player_id]
-                            print(f"DEBUG: Found world for player {player_id}, type: {type(world)}")
-                            print(f"DEBUG: World attributes: {[attr for attr in dir(world) if not attr.startswith('_')]}")
-                            
-                            # Try different location attributes
-                            if hasattr(world, 'location_table'):
-                                locations = world.location_table
-                                print(f"DEBUG: Found location_table with {len(locations)} locations")
-                                return len(locations)
-                            elif hasattr(world, 'locations'):
-                                locations = world.locations
-                                print(f"DEBUG: Found locations with {len(locations)} locations")
-                                return len(locations)
-                            elif hasattr(world, 'location_count'):
-                                count = world.location_count
-                                print(f"DEBUG: Found world.location_count: {count}")
-                                return count
-                    
-                    # Try to access location counts directly from multiworld
-                    if hasattr(multiworld, 'location_count'):
-                        print(f"DEBUG: Found multiworld.location_count, type: {type(multiworld.location_count)}")
-                        if hasattr(multiworld.location_count, '__getitem__'):
-                            try:
-                                count = multiworld.location_count[player_id]
-                                print(f"DEBUG: Found location_count[{player_id}]: {count}")
-                                return count
-                            except (KeyError, IndexError) as e:
-                                print(f"DEBUG: Could not access location_count[{player_id}]: {e}")
-                    
-                    # Try to get all locations and count those belonging to this player
-                    if hasattr(multiworld, 'get_locations'):
-                        try:
-                            all_locations = multiworld.get_locations()
-                            player_locations = [loc for loc in all_locations if getattr(loc, 'player', None) == player_id]
-                            if player_locations:
-                                print(f"DEBUG: Found {len(player_locations)} locations via get_locations() for player {player_id}")
-                                return len(player_locations)
-                        except Exception as e:
-                            print(f"DEBUG: get_locations() failed: {e}")
-                    
-                except Exception as e:
-                    print(f"DEBUG: Error accessing multiworld data: {e}")
-                    import traceback
-                    traceback.print_exc()
-            else:
-                print("DEBUG: No 'multiworld' key found in save_data")
-            
-            # Method 2: Look for location-related data structures in save_data
-            # Note: location_checks contains CHECKED locations, not total locations
-            location_related_keys = [key for key in save_data.keys() if 'location' in key.lower()]
-            print(f"DEBUG: Location-related keys in save_data: {location_related_keys}")
-            
-            for key in location_related_keys:
-                value = save_data[key]
-                print(f"DEBUG: Examining {key}, type: {type(value)}")
-                
-                # Skip location_checks as it contains checked locations, not total locations
-                if key == 'location_checks':
-                    if isinstance(value, dict):
-                        player_keys = [k for k in value.keys() if isinstance(k, tuple) and len(k) == 2 and k[1] == player_id]
-                        if player_keys:
-                            player_data = value[player_keys[0]]
-                            if isinstance(player_data, (list, set)):
-                                print(f"DEBUG: Found {len(player_data)} CHECKED locations in {key} for player {player_id} (not total)")
-                        elif player_id in value:
-                            player_data = value[player_id]
-                            if isinstance(player_data, (list, set)):
-                                print(f"DEBUG: Found {len(player_data)} CHECKED locations in {key}[{player_id}] (not total)")
-                    continue
-                
-                # Look for other location-related data that might contain totals
-                if isinstance(value, dict):
-                    # Look for player-specific data
-                    player_keys = [k for k in value.keys() if isinstance(k, tuple) and len(k) == 2 and k[1] == player_id]
-                    if player_keys:
-                        player_data = value[player_keys[0]]
-                        if isinstance(player_data, (list, set)):
-                            print(f"DEBUG: Found {len(player_data)} locations in {key} for player {player_id}")
-                            return len(player_data)
-                    
-                    # Also check for direct player_id keys
-                    if player_id in value:
-                        player_data = value[player_id]
-                        if isinstance(player_data, (list, set)):
-                            print(f"DEBUG: Found {len(player_data)} locations in {key}[{player_id}]")
-                            return len(player_data)
-            
-            # Method 3: Try to extract from archipelago file if it exists
-            archipelago_file = self.find_archipelago_file()
-            if archipelago_file:
-                print(f"DEBUG: Found .archipelago file: {archipelago_file}")
-                location_count = self.get_locations_from_archipelago_file(archipelago_file, player_id)
-                if location_count > 0:
-                    print(f"DEBUG: Got {location_count} locations from .archipelago file")
-                    return location_count
-            else:
-                print("DEBUG: No .archipelago file found")
-            
-            print(f"DEBUG: Could not determine total locations for player {player_id}")
-            return 0
-            
-        except Exception as e:
-            print(f"DEBUG: Error getting total locations for player {player_id}: {e}")
-            import traceback
-            traceback.print_exc()
-            return 0
     
-    def find_archipelago_file(self):
-        """Find the .archipelago file in the output directory or extract it from donkey.zip"""
-        from pathlib import Path
-        import zipfile
-        
-        output_path = Path(self.output_directory)
-        
-        # First check if .archipelago file already exists in output directory
-        archipelago_files = list(output_path.glob("*.archipelago"))
-        if archipelago_files:
-            # Return the most recent .archipelago file
-            return max(archipelago_files, key=lambda f: f.stat().st_mtime)
-        
-        # If not found, try to extract it from donkey.zip
-        donkey_zip_path = output_path / "donkey.zip"
-        if donkey_zip_path.exists():
-            try:
-                print(f"DEBUG: Looking for .archipelago file in {donkey_zip_path}")
-                with zipfile.ZipFile(donkey_zip_path, 'r') as zip_file:
-                    # Look for .archipelago files in the zip
-                    archipelago_files_in_zip = [f for f in zip_file.namelist() if f.endswith('.archipelago')]
-                    
-                    if archipelago_files_in_zip:
-                        archipelago_file_in_zip = archipelago_files_in_zip[0]
-                        print(f"DEBUG: Found {archipelago_file_in_zip} in donkey.zip")
-                        
-                        # Extract it to the output directory
-                        extracted_path = output_path / Path(archipelago_file_in_zip).name
-                        with zip_file.open(archipelago_file_in_zip) as source:
-                            with open(extracted_path, 'wb') as target:
-                                target.write(source.read())
-                        
-                        print(f"DEBUG: Extracted .archipelago file to {extracted_path}")
-                        return extracted_path
-                    else:
-                        print("DEBUG: No .archipelago file found in donkey.zip")
-                        
-            except Exception as e:
-                print(f"DEBUG: Error extracting .archipelago file from donkey.zip: {e}")
-        else:
-            print("DEBUG: donkey.zip not found")
-        
-        return None
     
-    def get_locations_from_archipelago_file(self, archipelago_file, player_id: int) -> int:
-        """Extract location count for a specific player from the .archipelago file"""
-        try:
-            import zlib
-            import pickle
-            import io
-            
-            with open(archipelago_file, 'rb') as f:
-                raw_data = f.read()
-            
-            # .archipelago files are zlib compressed pickle files with a 1-byte header
-            # Skip the first byte and decompress with zlib, then unpickle
-            try:
-                skipped_data = raw_data[1:]  # Skip first byte
-                decompressed_data = zlib.decompress(skipped_data)
-                
-                # Use a custom unpickler that can handle missing modules
-                class ArchipelagoUnpickler(pickle.Unpickler):
-                    def find_class(self, module, name):
-                        # Handle missing modules by creating generic placeholders
-                        if module in ['NetUtils', 'worlds', 'BaseClasses']:
-                            # Create a generic class that can hold data
-                            class GenericClass:
-                                def __init__(self, *args, **kwargs):
-                                    # Store all arguments as attributes
-                                    for i, arg in enumerate(args):
-                                        setattr(self, f'arg_{i}', arg)
-                                    for key, value in kwargs.items():
-                                        setattr(self, key, value)
-                                
-                                def __getitem__(self, key):
-                                    # Allow dictionary-like access
-                                    return getattr(self, key, None)
-                                
-                                def __setitem__(self, key, value):
-                                    setattr(self, key, value)
-                                
-                                def get(self, key, default=None):
-                                    return getattr(self, key, default)
-                                
-                                def keys(self):
-                                    return [attr for attr in dir(self) if not attr.startswith('_')]
-                                
-                                def values(self):
-                                    return [getattr(self, attr) for attr in self.keys()]
-                                
-                                def items(self):
-                                    return [(attr, getattr(self, attr)) for attr in self.keys()]
-                                
-                                def __len__(self):
-                                    return len(self.keys())
-                                
-                                def __contains__(self, key):
-                                    return hasattr(self, key)
-                            
-                            return GenericClass
-                        
-                        # For other modules, try to import normally
-                        try:
-                            return super().find_class(module, name)
-                        except (ImportError, AttributeError):
-                            # If we can't import it, create a generic placeholder
-                            class GenericClass:
-                                def __init__(self, *args, **kwargs):
-                                    pass
-                            return GenericClass
-                
-                unpickler = ArchipelagoUnpickler(io.BytesIO(decompressed_data))
-                multidata = unpickler.load()
-                
-                print(f"DEBUG: Successfully parsed .archipelago file, type: {type(multidata)}")
-                
-            except Exception as e:
-                print(f"Error parsing .archipelago file: {e}")
-                return 0
-            
-            # Look for location data in the multidata
-            print(f"DEBUG: Looking for location data in multidata")
-            if hasattr(multidata, '__getitem__') or isinstance(multidata, dict):
-                # Try different ways to access the data
-                locations_data = None
-                
-                # Method 1: Direct 'locations' key
-                try:
-                    if 'locations' in multidata:
-                        locations_data = multidata['locations']
-                        print(f"DEBUG: Found 'locations' key, type: {type(locations_data)}")
-                except:
-                    pass
-                
-                # Method 2: Check for location_table or similar
-                if not locations_data:
-                    for key in ['location_table', 'location_tables', 'world_locations']:
-                        try:
-                            if key in multidata:
-                                locations_data = multidata[key]
-                                print(f"DEBUG: Found '{key}' key, type: {type(locations_data)}")
-                                break
-                        except:
-                            continue
-                
-                # Method 3: Look through all keys for location-related data
-                if not locations_data:
-                    try:
-                        if hasattr(multidata, 'keys'):
-                            all_keys = list(multidata.keys())
-                        elif hasattr(multidata, '__dict__'):
-                            all_keys = list(multidata.__dict__.keys())
-                        else:
-                            all_keys = []
-                        
-                        print(f"DEBUG: All keys in multidata: {all_keys}")
-                        
-                        for key in all_keys:
-                            if 'location' in str(key).lower():
-                                try:
-                                    locations_data = multidata[key]
-                                    print(f"DEBUG: Found location-related key '{key}', type: {type(locations_data)}")
-                                    break
-                                except:
-                                    continue
-                    except Exception as e:
-                        print(f"DEBUG: Error examining multidata keys: {e}")
-                
-                # Now try to extract player-specific location count
-                if locations_data:
-                    print(f"DEBUG: Processing locations_data for player {player_id}")
-                    
-                    # If locations_data is a dict-like object
-                    if hasattr(locations_data, '__getitem__'):
-                        # Try different player ID formats
-                        for pid in [player_id, str(player_id), (0, player_id)]:
-                            try:
-                                if pid in locations_data:
-                                    player_locations = locations_data[pid]
-                                    if hasattr(player_locations, '__len__'):
-                                        count = len(player_locations)
-                                        print(f"DEBUG: Found {count} locations for player {player_id} using key {pid}")
-                                        return count
-                            except Exception as e:
-                                print(f"DEBUG: Error accessing locations_data[{pid}]: {e}")
-                                continue
-                    
-                    # If locations_data is a list or other iterable
-                    elif hasattr(locations_data, '__len__'):
-                        try:
-                            if len(locations_data) > player_id:
-                                player_locations = locations_data[player_id]
-                                if hasattr(player_locations, '__len__'):
-                                    count = len(player_locations)
-                                    print(f"DEBUG: Found {count} locations for player {player_id} from list index")
-                                    return count
-                        except Exception as e:
-                            print(f"DEBUG: Error accessing locations_data[{player_id}]: {e}")
-                
-                print(f"DEBUG: Could not find location data for player {player_id}")
-            else:
-                print(f"DEBUG: multidata is not dict-like: {type(multidata)}")
-            
-            return 0
-                
-        except Exception as e:
-            print(f"Error reading .archipelago file: {e}")
-            import traceback
-            traceback.print_exc()
-            return 0
     
     def create_progress_bar(self, percentage: float, length: int = 20) -> str:
         """Create a visual progress bar"""
-        filled_length = int(length * percentage / 100)
-        bar = "█" * filled_length + "░" * (length - filled_length)
-        return f"[{bar}] {percentage:.1f}%"
-    
-    def is_priority_status(self, status) -> bool:
-        """
-        Determine if a hint status indicates priority.
-        Based on Archipelago's hint status system:
-        - Found hints are always included (handled separately)
-        - Priority hints should be included
-        - "No Priority" and "Avoid" hints should be excluded
-        
-        Status values in Archipelago (from NetUtils.py):
-        - HintStatus.NO_HINT = 0
-        - HintStatus.HINT = 1  
-        - HintStatus.PRIORITY = 2
-        - HintStatus.AVOID = 3
-        """
-        # Handle different status representations
-        if hasattr(status, 'value'):
-            # If it's an enum-like object, get the value
-            status_value = status.value
-        elif isinstance(status, int):
-            # If it's already an integer
-            status_value = status
-        else:
-            # If it's something else, try to convert or default to 0
-            try:
-                status_value = int(status)
-            except (ValueError, TypeError):
-                status_value = 0
-        
-        # Include hints with HINT (1) or PRIORITY (2) status
-        # Exclude NO_HINT (0) and AVOID (3) status
-        return status_value in [1, 2]
+        return create_progress_bar(percentage, length)
     
     def get_player_hint_points(self, player_id: int, save_data: dict) -> int:
         """Get the current hint points for a specific player"""
-        try:
-            # In Archipelago, hint points are calculated as:
-            # total_locations * hint_points_percentage - hints_used * hint_cost
-            # But since we don't have the exact formula, we'll calculate based on available data
-            
-            # Method 1: Check if there's a direct hint_points field in save_data
-            if "hint_points" in save_data:
-                hint_points = save_data["hint_points"]
-                if isinstance(hint_points, dict):
-                    # Check for player-specific hint points
-                    if player_id in hint_points:
-                        return hint_points[player_id]
-                    elif str(player_id) in hint_points:
-                        return hint_points[str(player_id)]
-                    # Check for (team, slot) format
-                    elif (0, player_id) in hint_points:
-                        return hint_points[(0, player_id)]
-            
-            # Method 2: Calculate based on hints_used and checked locations
-            # Based on feedback: hint_points = checked_locations - (hints_used * hint_cost)
-            hints_used_data = save_data.get("hints_used", {})
-            hints_used = 0
-            
-            # Check for hints used by this player
-            if (0, player_id) in hints_used_data:
-                hints_used = hints_used_data[(0, player_id)]
-            elif player_id in hints_used_data:
-                hints_used = hints_used_data[player_id]
-            elif str(player_id) in hints_used_data:
-                hints_used = hints_used_data[str(player_id)]
-            
-            print(f"DEBUG: Player {player_id} has used {hints_used} hints")
-            
-            # Get checked locations for this player
-            location_checks = save_data.get("location_checks", {})
-            checked_locations = 0
-            
-            # Check for checked locations by this player
-            if (0, player_id) in location_checks:
-                checked_locations_set = location_checks[(0, player_id)]
-                checked_locations = len(checked_locations_set) if hasattr(checked_locations_set, '__len__') else 0
-            elif player_id in location_checks:
-                checked_locations_set = location_checks[player_id]
-                checked_locations = len(checked_locations_set) if hasattr(checked_locations_set, '__len__') else 0
-            elif str(player_id) in location_checks:
-                checked_locations_set = location_checks[str(player_id)]
-                checked_locations = len(checked_locations_set) if hasattr(checked_locations_set, '__len__') else 0
-            
-            print(f"DEBUG: Player {player_id} has checked {checked_locations} locations")
-            
-            # Get total locations for this player to calculate hint cost
-            total_locations = self.get_player_total_locations(player_id, save_data)
-            
-            if total_locations > 0:
-                # Calculate hint cost (5% of total locations per hint as we determined earlier)
-                hint_cost = max(10, int(total_locations * 0.05))
-                
-                # Calculate hint points based on the correct formula:
-                # hint_points = checked_locations - (hints_used * hint_cost)
-                remaining_points = checked_locations - (hints_used * hint_cost)
-                
-                print(f"DEBUG: Player {player_id} calculation: {checked_locations} checked - ({hints_used} * {hint_cost}) = {remaining_points}")
-                
-                return max(0, remaining_points)  # Don't return negative points
-            
-            # Method 3: Check multiworld object for hint points
-            if "multiworld" in save_data:
-                multiworld = save_data["multiworld"]
-                if hasattr(multiworld, 'hint_points'):
-                    hint_points = multiworld.hint_points
-                    if hasattr(hint_points, '__getitem__'):
-                        try:
-                            return hint_points[player_id]
-                        except (KeyError, IndexError):
-                            pass
-                
-                # Check for worlds-specific hint points
-                if hasattr(multiworld, 'worlds') and len(multiworld.worlds) > player_id:
-                    world = multiworld.worlds[player_id]
-                    if hasattr(world, 'hint_points'):
-                        return world.hint_points
-            
-            # Method 4: Look for any field containing "hint" and "point"
-            for key, value in save_data.items():
-                if "hint" in key.lower() and "point" in key.lower():
-                    if isinstance(value, dict):
-                        if player_id in value:
-                            return value[player_id]
-                        elif str(player_id) in value:
-                            return value[str(player_id)]
-                        elif (0, player_id) in value:
-                            return value[(0, player_id)]
-            
-            # Default: return 0 if no hint points found
-            print(f"DEBUG: Could not calculate hint points for player {player_id}, returning 0")
-            return 0
-            
-        except Exception as e:
-            print(f"Error getting hint points for player {player_id}: {e}")
-            return 0
+        return get_player_hint_points(player_id, save_data, self.get_player_total_locations)
     
     def get_hint_cost(self, player_id: int, save_data: dict) -> int:
         """Get the cost of the next hint for a specific player"""
-        try:
-            # Look for hint cost in the save data
-            # Hint cost is typically calculated based on how many hints the player already has
-            
-            # Method 1: Check if there's a hint_cost or similar field in save_data
-            if "hint_cost" in save_data:
-                hint_cost = save_data["hint_cost"]
-                if isinstance(hint_cost, dict):
-                    if player_id in hint_cost:
-                        return hint_cost[player_id]
-                    elif str(player_id) in hint_cost:
-                        return hint_cost[str(player_id)]
-                    elif (0, player_id) in hint_cost:
-                        return hint_cost[(0, player_id)]
-            
-            # Method 2: Check multiworld object for hint cost
-            if "multiworld" in save_data:
-                multiworld = save_data["multiworld"]
-                if hasattr(multiworld, 'hint_cost'):
-                    hint_cost = multiworld.hint_cost
-                    if hasattr(hint_cost, '__getitem__'):
-                        try:
-                            return hint_cost[player_id]
-                        except (KeyError, IndexError):
-                            pass
-                
-                # Check for worlds-specific hint cost
-                if hasattr(multiworld, 'worlds') and len(multiworld.worlds) > player_id:
-                    world = multiworld.worlds[player_id]
-                    if hasattr(world, 'hint_cost'):
-                        return world.hint_cost
-            
-            # Method 3: Calculate hint cost based on existing hints and player's total locations
-            # In Archipelago, hint cost is typically based on the percentage of locations in the player's game
-            # Common formula: (total_locations_in_player_game / 100) * 10, with a minimum cost
-            
-            # Get the total number of locations for this player's game
-            total_locations = self.get_player_total_locations(player_id, save_data)
-            
-            if total_locations > 0:
-                # Calculate cost based on total locations in the player's game
-                # Server is configured to provide a hint for every 5% of available locations
-                # So hint cost = 5% of total locations, with a minimum of 10
-                calculated_cost = max(10, int(total_locations * 0.05))
-                print(f"DEBUG: Calculated hint cost for player {player_id}: {calculated_cost} (5% of {total_locations} total locations)")
-                return calculated_cost
-            else:
-                # Fallback: Count how many hints this player already has and use old formula
-                hints_data = save_data.get("hints", {})
-                player_hint_count = 0
-                
-                for hint_set in hints_data.values():
-                    if isinstance(hint_set, set):
-                        for hint in hint_set:
-                            if hasattr(hint, 'receiving_player') and hint.receiving_player == player_id:
-                                player_hint_count += 1
-                    elif isinstance(hint_set, (list, tuple)):
-                        for hint in hint_set:
-                            if hasattr(hint, 'receiving_player') and hint.receiving_player == player_id:
-                                player_hint_count += 1
-                
-                # Use fallback formula: 10 + (hints_owned * 10)
-                base_cost = 10
-                increment = 10
-                calculated_cost = base_cost + (player_hint_count * increment)
-                print(f"DEBUG: Fallback hint cost calculation for player {player_id}: {calculated_cost} (based on {player_hint_count} existing hints)")
-                return calculated_cost
-            
-        except Exception as e:
-            print(f"Error getting hint cost for player {player_id}: {e}")
-            return 10  # Default cost
+        return get_hint_cost(player_id, save_data, self.get_player_total_locations)
 
     @app_commands.command(
         name="hints",
@@ -2844,6 +2183,257 @@ class ApCog(commands.GroupCog, group_name="ap"):
                     await interaction.channel.send(chunk)
         else:
             await interaction.followup.send(hints_message)
+
+    @app_commands.command(
+        name="gethint",
+        description="Get a hint for a specific item by connecting as a player",
+    )
+    @app_commands.describe(
+        player_name="The player name to connect as",
+        item_name="The item to get a hint for"
+    )
+    async def ap_gethint(self, interaction: discord.Interaction, player_name: str, item_name: str):
+        await interaction.response.defer()
+        
+        # Resolve "me" to actual player name
+        resolved_name = self.resolve_player_name(interaction.user.id, player_name)
+        if resolved_name is None and player_name.lower() == "me":
+            await interaction.followup.send("❌ You haven't joined the game yet. Use `/ap join` first.")
+            return
+        elif resolved_name is None:
+            resolved_name = player_name
+        
+        try:
+            # Get server password
+            password = self.get_server_password()
+        except Exception as e:
+            await interaction.followup.send(f"❌ Server password error: {str(e)}")
+            return
+        
+        # Check if server is running
+        if not self.is_server_running():
+            await interaction.followup.send("❌ Archipelago server is not running. Use `/ap start` to start the server first.")
+            return
+        
+        server_url = "ws://ap.rhelys.com:38281"
+        
+        try:
+            # Connect to the Archipelago websocket server
+            websocket = await self._connect_to_server(server_url)
+            
+            # Variables to track the hint process
+            tracker_connection_established = False
+            player_connection_established = False
+            hint_response_received = False
+            player_game = None
+            player_slot = None
+            
+            try:
+                # First connect as tracker to get player's game information
+                tracker_connect_msg = {
+                    "cmd": "Connect",
+                    "game": "",
+                    "password": password,
+                    "name": "Rhelbot",
+                    "version": {"major": 0, "minor": 6, "build": 0, "class": "Version"},
+                    "tags": ["Tracker"],
+                    "items_handling": 0b000,  # No items handling for tracker
+                    "uuid": __import__('uuid').getnode()
+                }
+                await websocket.send(json.dumps([tracker_connect_msg]))
+                
+                # Process messages with timeout
+                timeout_counter = 0
+                max_timeout = 30  # 30 seconds total timeout
+                
+                while timeout_counter < max_timeout and not hint_response_received:
+                    try:
+                        message = await asyncio.wait_for(websocket.recv(), timeout=1.0)
+                        data = json.loads(message)
+                        
+                        for msg in data:
+                            cmd = msg.get("cmd", "")
+                            
+                            if cmd == "Connected" and not tracker_connection_established:
+                                tracker_connection_established = True
+                                
+                                # Extract player information
+                                slot_info = msg.get("slot_info", {})
+                                
+                                # Find the player's slot and game
+                                for slot_id, slot_data in slot_info.items():
+                                    if slot_data.get("name", "").lower() == resolved_name.lower():
+                                        player_slot = int(slot_id)
+                                        player_game = slot_data.get("game", "")
+                                        break
+                                
+                                if player_slot is None:
+                                    await interaction.followup.send(f"❌ Player '{resolved_name}' not found in the current game.")
+                                    return
+                                
+                                # Close tracker connection and reconnect as player
+                                await websocket.close()
+                                
+                                # Reconnect as the specific player
+                                websocket = await self._connect_to_server(server_url)
+                                
+                                player_connect_msg = {
+                                    "cmd": "Connect",
+                                    "game": player_game,  # Use the player's actual game
+                                    "password": password,
+                                    "name": resolved_name,
+                                    "version": {"major": 0, "minor": 6, "build": 0, "class": "Version"},
+                                    "tags": [],
+                                    "items_handling": 0b111,  # Full items handling for player connection
+                                    "uuid": __import__('uuid').getnode()
+                                }
+                                await websocket.send(json.dumps([player_connect_msg]))
+                                
+                            elif cmd == "Connected" and tracker_connection_established and not player_connection_established:
+                                player_connection_established = True
+                                
+                                # Send initial status to confirm connection
+                                await interaction.followup.send(f"🔍 Connected as **{resolved_name}** ({player_game}). Requesting hint for **{item_name}**...")
+                                
+                                # Send the hint command
+                                await websocket.send(json.dumps([{"cmd": "Say", "text": f"!hint {item_name}"}]))
+                                
+                            elif cmd == "ConnectionRefused":
+                                errors = msg.get("errors", ["Unknown error"])
+                                await interaction.followup.send(f"❌ Connection refused: {', '.join(errors)}")
+                                return
+                                
+                            elif cmd == "PrintJSON" and player_connection_established:
+                                # Look for hint response in the print messages
+                                msg_type = msg.get("type", "")
+                                data_parts = msg.get("data", [])
+                                
+                                # Build the text from data parts
+                                text_parts = []
+                                for part in data_parts:
+                                    if isinstance(part, dict) and "text" in part:
+                                        text_parts.append(part["text"])
+                                    elif isinstance(part, str):
+                                        text_parts.append(part)
+                                
+                                full_text = "".join(text_parts)
+                                
+                                # Skip our own hint command message
+                                if full_text.strip() == f"!hint {item_name}":
+                                    print(f"Skipping our own hint command: {full_text}")
+                                    continue
+                                
+                                # Skip messages that are just the player's own command
+                                if full_text.strip().startswith(f"{resolved_name}:") and "!hint" in full_text:
+                                    print(f"Skipping player's own command echo: {full_text}")
+                                    continue
+                                
+                                # Check if this is a hint response (look for various hint indicators)
+                                hint_indicators = [
+                                    "found at",
+                                    "is at",
+                                    "you already know",
+                                    "not enough points", 
+                                    "no such item",
+                                    "cannot afford",
+                                    "item does not exist",
+                                    "already hinted"
+                                ]
+                                
+                                # Also check if the message contains the item name and typical hint response patterns
+                                contains_item = item_name.lower() in full_text.lower()
+                                has_hint_pattern = any(indicator in full_text.lower() for indicator in hint_indicators)
+                                
+                                # Look for location/hint information patterns
+                                location_patterns = [
+                                    " in ",
+                                    " at ",
+                                    " from ",
+                                    " (world ",
+                                    " - "
+                                ]
+                                has_location_info = any(pattern in full_text.lower() for pattern in location_patterns)
+                                
+                                # Check if this looks like a server response (not just our command)
+                                is_server_response = (
+                                    (contains_item and (has_hint_pattern or has_location_info)) or
+                                    has_hint_pattern
+                                ) and full_text.strip() and not full_text.startswith("!")
+                                
+                                if is_server_response:
+                                    print(f"Detected hint response: {full_text}")
+                                    hint_result = full_text
+                                    hint_response_received = True
+                                    
+                                    # Try to resolve names from IDs in the response
+                                    processed_hint_result = await self.process_hint_response(full_text, player_game)
+                                    
+                                    # Determine response type for appropriate color
+                                    if "not enough points" in full_text.lower() or "cannot afford" in full_text.lower():
+                                        color = 0xff0000  # Red for insufficient points
+                                        title = f"❌ Insufficient Points for {item_name}"
+                                    elif "no such item" in full_text.lower() or "item does not exist" in full_text.lower():
+                                        color = 0xffa500  # Orange for item not found
+                                        title = f"⚠️ Item Not Found: {item_name}"
+                                    elif "you already know" in full_text.lower() or "already hinted" in full_text.lower():
+                                        color = 0x0099ff  # Blue for already known
+                                        title = f"ℹ️ Already Known: {item_name}"
+                                    else:
+                                        color = 0x00ff00  # Green for successful hint
+                                        title = f"🔍 Hint for {item_name}"
+                                    
+                                    # Create response embed
+                                    embed = discord.Embed(
+                                        title=title,
+                                        description=f"**Player:** {resolved_name} ({player_game})",
+                                        color=color
+                                    )
+                                    
+                                    # Add only the processed hint response from server
+                                    embed.add_field(name="Server Response", value=processed_hint_result, inline=False)
+                                    
+                                    await interaction.followup.send(embed=embed)
+                                    break
+                                else:
+                                    print(f"Skipping non-hint message: {full_text}")
+                        
+                    except asyncio.TimeoutError:
+                        timeout_counter += 1
+                        continue
+                
+                # Check if we got a response
+                if not hint_response_received and player_connection_established:
+                    await interaction.followup.send(
+                        f"❌ No hint response received for **{item_name}**. "
+                        f"The item may not exist, may already be found, or the server may be unresponsive."
+                    )
+                elif not tracker_connection_established:
+                    await interaction.followup.send("❌ Failed to connect to the Archipelago server to get player information.")
+                elif not player_connection_established:
+                    await interaction.followup.send(f"❌ Failed to connect to the Archipelago server as **{resolved_name}**. Make sure the player name is correct and exists in the current game.")
+                    
+            finally:
+                await websocket.close()
+                
+        except Exception as e:
+            await interaction.followup.send(f"❌ Error getting hint: {str(e)}")
+
+    async def process_hint_response(self, hint_text: str, player_game: str) -> str:
+        """Process hint response to resolve item and location names from IDs"""
+        # Get game data if needed
+        if not self.game_data:
+            server_data = await self.fetch_server_data()
+            if server_data and server_data.get("game_data"):
+                self.game_data = server_data["game_data"]
+        
+        return await process_hint_response(
+            hint_text, 
+            player_game, 
+            self.game_data, 
+            self.lookup_item_name, 
+            self.lookup_location_name, 
+            self.fetch_server_data
+        )
 
     @app_commands.command(
         name="help", description="Basic Archipelago setup information and game lists"
