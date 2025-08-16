@@ -300,19 +300,35 @@ class ApCog(commands.GroupCog, group_name="ap"):
             del self.active_connections[server_url]
 
     def lookup_item_name(self, game: str, item_id: int) -> str:
-        """Look up item name from ID using game data"""
+        """
+        Look up item name from ID using game data.
+        
+        Tries local datapackage first, then falls back to in-memory game_data.
+        """
         return lookup_item_name(game, item_id, self.game_data)
     
     def lookup_location_name(self, game: str, location_id: int) -> str:
-        """Look up location name from ID using game data"""
+        """
+        Look up location name from ID using game data.
+        
+        Tries local datapackage first, then falls back to in-memory game_data.
+        """
         return lookup_location_name(game, location_id, self.game_data)
     
     def lookup_player_name(self, player_id: int) -> str:
-        """Look up player name from ID using connection data"""
+        """
+        Look up player name from ID using connection data.
+        
+        Tries local datapackage first, then falls back to in-memory connection_data.
+        """
         return lookup_player_name(player_id, self.connection_data)
     
     def lookup_player_game(self, player_id: int) -> str:
-        """Look up player's game from ID using connection data"""
+        """
+        Look up player's game from ID using connection data.
+        
+        Tries local datapackage first, then falls back to in-memory connection_data.
+        """
         return lookup_player_game(player_id, self.connection_data)
 
     async def process_ap_message(self, msg: dict, channel):
@@ -586,6 +602,23 @@ class ApCog(commands.GroupCog, group_name="ap"):
             await interaction.followup.send(f"❌ Invalid websocket URL. Must start with ws:// or wss://")
             return
         
+        # Check if we already have a datapackage available
+        from helpers.data_helpers import is_datapackage_available, fetch_and_save_datapackage
+        have_datapackage = is_datapackage_available()
+        
+        # If not, fetch and save it for faster lookups during tracking
+        if not have_datapackage:
+            await interaction.followup.send("📦 Fetching datapackage for local caching...")
+            
+            try:
+                datapackage_success = fetch_and_save_datapackage(server_url, password)
+                if datapackage_success:
+                    logger.info(f"Successfully cached datapackage for tracking {server_url}")
+                else:
+                    logger.warning(f"Failed to cache datapackage for tracking {server_url}")
+            except Exception as dp_error:
+                logger.error(f"Error caching datapackage for tracking: {dp_error}")
+        
         # Start the websocket listener task
         task = asyncio.create_task(self.websocket_listener(server_url, channel_id_int, password))
         
@@ -851,6 +884,11 @@ class ApCog(commands.GroupCog, group_name="ap"):
 
         for file in outputfiles():
             remove(f"{self.output_directory}/{file}")
+            
+        # Delete any existing datapackage to ensure clean start
+        from helpers.data_helpers import delete_local_datapackage
+        delete_local_datapackage()
+        logger.info("Deleted local datapackage before server start")
 
         # Todo - add error handling for submitted file to make sure it includes a .archipelago file
         if apfile:
@@ -975,6 +1013,23 @@ class ApCog(commands.GroupCog, group_name="ap"):
             server_password = get_server_password()
             server_message = f"Archipelago server started.\nServer: ap.rhelys.com\nPort: 38281\nPassword: {server_password}"
             await interaction.edit_original_response(content=server_message)
+            
+            # After server is started, fetch and save the datapackage
+            try:
+                from helpers.data_helpers import fetch_and_save_datapackage
+                import asyncio
+                
+                # Give the server a moment to fully initialize
+                await asyncio.sleep(5)
+                
+                success = fetch_and_save_datapackage("ws://ap.rhelys.com:38281", server_password)
+                if success:
+                    logger.info("Successfully saved datapackage after server start")
+                else:
+                    logger.warning("Failed to save datapackage after server start")
+            except Exception as dp_error:
+                logger.error(f"Error saving datapackage after server start: {dp_error}")
+                
         except Exception as e:
             await interaction.edit_original_response(
                 content=f"✅ Archipelago server started.\n❌ Server password error: {str(e)}\n"
@@ -1295,9 +1350,19 @@ class ApCog(commands.GroupCog, group_name="ap"):
                     pass
             
             if killed_processes:
+                # Delete the local datapackage when server is stopped
+                try:
+                    from helpers.data_helpers import delete_local_datapackage
+                    delete_success = delete_local_datapackage()
+                    datapackage_message = "\nDatapackage cleaned up successfully." if delete_success else ""
+                    logger.info(f"Deleted datapackage on server stop: {delete_success}")
+                except Exception as dp_error:
+                    datapackage_message = f"\nWarning: Failed to clean up datapackage: {str(dp_error)}"
+                    logger.error(f"Error deleting datapackage on server stop: {dp_error}")
+                
                 await interaction.followup.send(
                     f"✅ Successfully stopped Archipelago server.\n"
-                    f"Killed processes: {', '.join(map(str, killed_processes))}"
+                    f"Killed processes: {', '.join(map(str, killed_processes))}{datapackage_message}"
                 )
             else:
                 await interaction.followup.send("❌ No running Archipelago server found.")
@@ -1389,10 +1454,28 @@ class ApCog(commands.GroupCog, group_name="ap"):
             
             try:
                 server_password = self.get_server_password()
-                await interaction.edit_original_response(
-                    content="✅ Archipelago server restarted successfully!\n"
-                            f"Server: ap.rhelys.com\nPort: 38281\nPassword: {server_password}"
-                )
+                restart_message = "✅ Archipelago server restarted successfully!\n" \
+                                 f"Server: ap.rhelys.com\nPort: 38281\nPassword: {server_password}"
+                
+                # After server is restarted, fetch and save a fresh datapackage
+                try:
+                    from helpers.data_helpers import fetch_and_save_datapackage
+                    import asyncio
+                    
+                    # Give the server a moment to fully initialize
+                    await asyncio.sleep(5)
+                    
+                    success = fetch_and_save_datapackage("ws://ap.rhelys.com:38281", server_password)
+                    if success:
+                        logger.info("Successfully saved datapackage after server restart")
+                    else:
+                        logger.warning("Failed to save datapackage after server restart")
+                        restart_message += "\nWarning: Failed to refresh datapackage."
+                except Exception as dp_error:
+                    logger.error(f"Error saving datapackage after server restart: {dp_error}")
+                    restart_message += f"\nWarning: Error refreshing datapackage: {str(dp_error)}"
+                
+                await interaction.edit_original_response(content=restart_message)
             except Exception as e:
                 await interaction.edit_original_response(
                     content="✅ Archipelago server restarted successfully!\n"

@@ -7,7 +7,9 @@ import websockets
 import json
 import logging
 import subprocess
-from typing import Dict, Any, Optional
+import os
+from typing import Dict, Any, Optional, Tuple
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -121,8 +123,20 @@ async def connect_to_server(server_url: str, timeout: float = 15.0):
         timeout=timeout
     )
 
-async def fetch_server_data(server_url: str = "ws://ap.rhelys.com:38281", password: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """Connect to server temporarily to fetch player and game data."""
+async def fetch_server_data(server_url: str = "ws://ap.rhelys.com:38281", password: Optional[str] = None, 
+                           save_datapackage: bool = False, file_path: str = "datapackage.json") -> Optional[Dict[str, Any]]:
+    """
+    Connect to server temporarily to fetch player and game data.
+    
+    Args:
+        server_url: Archipelago server URL
+        password: Server password (optional)
+        save_datapackage: Whether to save the datapackage locally (default: False)
+        file_path: Path to save the datapackage (default: datapackage.json)
+    
+    Returns:
+        Optional[Dict[str, Any]]: Dictionary containing players and game_data, or None on failure
+    """
     try:
         logger.debug(f"Attempting to fetch server data from {server_url}")
         
@@ -209,10 +223,30 @@ async def fetch_server_data(server_url: str = "ws://ap.rhelys.com:38281", passwo
                     }
                 
                 logger.info(f"Successfully fetched data for {len(all_players)} players and {len(game_data)} games")
-                return {
+                
+                result = {
                     "players": all_players,
                     "game_data": game_data
                 }
+                
+                # Optionally save the datapackage locally
+                if save_datapackage:
+                    try:
+                        from helpers.data_helpers import save_datapackage_locally
+                        
+                        # Create a compatible connection_data structure
+                        connection_data = {
+                            server_url: {
+                                "slot_info": {str(player_id): player_info for player_id, player_info in all_players.items()}
+                            }
+                        }
+                        
+                        save_datapackage_locally(game_data, connection_data)
+                        logger.info("Saved datapackage locally after fetch_server_data")
+                    except Exception as save_error:
+                        logger.error(f"Error saving datapackage: {save_error}")
+                
+                return result
             else:
                 logger.warning("Failed to get connection data from server")
                 return None
@@ -223,3 +257,59 @@ async def fetch_server_data(server_url: str = "ws://ap.rhelys.com:38281", passwo
     except Exception as e:
         logger.error(f"Error fetching server data: {e}")
         return None
+
+async def connect_and_save_datapackage(server_url: str = "ws://ap.rhelys.com:38281", 
+                                      password: Optional[str] = None,
+                                      file_path: str = "datapackage.json") -> Tuple[bool, str]:
+    """
+    Connect to the Archipelago server and save the datapackage locally.
+    
+    This function is specifically designed to handle the datapackage fetching and saving
+    as a standalone operation, with appropriate error handling and status reporting.
+    
+    Args:
+        server_url: Archipelago server URL
+        password: Server password (optional)
+        file_path: Path to save the datapackage (default: datapackage.json)
+        
+    Returns:
+        Tuple[bool, str]: (success, message) - success flag and status message
+    """
+    try:
+        # Try to connect and fetch data
+        server_data = await fetch_server_data(server_url, password)
+        
+        if not server_data:
+            return False, "Failed to connect to server or retrieve data"
+            
+        # Extract game_data and players
+        game_data = server_data.get("game_data", {})
+        players = server_data.get("players", {})
+        
+        if not game_data:
+            return False, "Connected to server but received no game data"
+            
+        # Create connection_data structure
+        connection_data = {
+            server_url: {
+                "slot_info": {str(player_id): player_info for player_id, player_info in players.items()}
+            }
+        }
+        
+        # Import here to avoid circular imports
+        from helpers.data_helpers import save_datapackage_locally, delete_local_datapackage
+        
+        # Delete any existing datapackage first
+        delete_local_datapackage(file_path)
+        
+        # Save the new datapackage
+        if save_datapackage_locally(game_data, connection_data, file_path):
+            games_count = len(game_data)
+            players_count = len(players)
+            return True, f"Successfully saved datapackage with {games_count} games and {players_count} players"
+        else:
+            return False, "Failed to save datapackage locally"
+            
+    except Exception as e:
+        logger.error(f"Error in connect_and_save_datapackage: {e}")
+        return False, f"Error: {str(e)}"

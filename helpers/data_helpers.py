@@ -7,9 +7,10 @@ import pickle
 import zlib
 import logging
 import os
+import shutil
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 
 logger = logging.getLogger(__name__)
 
@@ -202,3 +203,198 @@ def extract_player_data_from_save(save_data: Dict[str, Any]) -> Tuple[Dict[int, 
     
     logger.debug(f"Extracted {len(all_players)} players from save data")
     return all_players, game_data
+
+def save_datapackage_locally(game_data: Dict[str, Any], connection_data: Dict[str, Any], 
+                            file_path: str = "datapackage.json") -> bool:
+    """
+    Save the Archipelago datapackage to a local JSON file for faster lookup.
+    
+    Args:
+        game_data: Dictionary containing game data (item and location mappings)
+        connection_data: Dictionary containing connection data (player information)
+        file_path: Path to save the datapackage (default: datapackage.json)
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        # Create a combined data structure for efficient lookup
+        datapackage = {
+            "game_data": game_data,
+            "connection_data": connection_data,
+            "timestamp": datetime.now().isoformat(),
+            "version": "1.0"
+        }
+        
+        # Create directory if it doesn't exist
+        os.makedirs(os.path.dirname(file_path) if os.path.dirname(file_path) else '.', exist_ok=True)
+        
+        # Save to JSON file
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(datapackage, f, indent=2)
+            
+        logger.info(f"Successfully saved datapackage to {file_path}")
+        
+        # Log some stats for debugging
+        game_count = len(game_data)
+        total_items = sum(len(game.get("item_name_to_id", {})) for game in game_data.values())
+        total_locations = sum(len(game.get("location_name_to_id", {})) for game in game_data.values())
+        player_count = sum(len(conn.get("slot_info", {})) for conn in connection_data.values())
+        
+        logger.debug(f"Datapackage stats: {game_count} games, {total_items} items, "
+                    f"{total_locations} locations, {player_count} players")
+        
+        return True
+    except Exception as e:
+        logger.error(f"Error saving datapackage to {file_path}: {e}")
+        return False
+
+def load_local_datapackage(file_path: str = "datapackage.json") -> Optional[Dict[str, Any]]:
+    """
+    Load the Archipelago datapackage from a local JSON file.
+    
+    Args:
+        file_path: Path to the datapackage file (default: datapackage.json)
+        
+    Returns:
+        Optional[Dict[str, Any]]: The loaded datapackage or None if not available
+    """
+    try:
+        if not os.path.exists(file_path):
+            logger.debug(f"Datapackage file {file_path} not found")
+            return None
+            
+        with open(file_path, 'r', encoding='utf-8') as f:
+            datapackage = json.load(f)
+            
+        # Validate the datapackage structure
+        if not all(key in datapackage for key in ["game_data", "connection_data", "timestamp"]):
+            logger.warning(f"Invalid datapackage format in {file_path}")
+            return None
+            
+        logger.info(f"Successfully loaded datapackage from {file_path} (created {datapackage.get('timestamp', 'unknown')})")
+        
+        # Log some stats for debugging
+        game_data = datapackage.get("game_data", {})
+        connection_data = datapackage.get("connection_data", {})
+        
+        game_count = len(game_data)
+        player_count = sum(len(conn.get("slot_info", {})) for conn in connection_data.values())
+        
+        logger.debug(f"Loaded datapackage with {game_count} games and {player_count} players")
+        
+        return datapackage
+    except Exception as e:
+        logger.error(f"Error loading datapackage from {file_path}: {e}")
+        return None
+
+def delete_local_datapackage(file_path: str = "datapackage.json") -> bool:
+    """
+    Delete the local Archipelago datapackage file.
+    
+    Args:
+        file_path: Path to the datapackage file (default: datapackage.json)
+        
+    Returns:
+        bool: True if successful or file didn't exist, False on error
+    """
+    try:
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            logger.info(f"Successfully deleted datapackage file {file_path}")
+        else:
+            logger.debug(f"Datapackage file {file_path} not found, nothing to delete")
+        
+        return True
+    except Exception as e:
+        logger.error(f"Error deleting datapackage file {file_path}: {e}")
+        return False
+
+def is_datapackage_available(file_path: str = "datapackage.json") -> bool:
+    """
+    Check if a local datapackage file is available and valid.
+    
+    Args:
+        file_path: Path to the datapackage file (default: datapackage.json)
+        
+    Returns:
+        bool: True if available and valid, False otherwise
+    """
+    try:
+        if not os.path.exists(file_path):
+            return False
+            
+        # Try to read the file to verify it's valid JSON
+        with open(file_path, 'r', encoding='utf-8') as f:
+            datapackage = json.load(f)
+            
+        # Check for required keys
+        return all(key in datapackage for key in ["game_data", "connection_data", "timestamp"])
+    except Exception:
+        # If any error occurs, the datapackage is not available
+        return False
+
+def get_from_datapackage(key: str, file_path: str = "datapackage.json") -> Optional[Dict[str, Any]]:
+    """
+    Get a specific part of the datapackage (game_data or connection_data).
+    
+    Args:
+        key: The key to retrieve ("game_data" or "connection_data")
+        file_path: Path to the datapackage file (default: datapackage.json)
+        
+    Returns:
+        Optional[Dict[str, Any]]: The requested data or None if not available
+    """
+    datapackage = load_local_datapackage(file_path)
+    if not datapackage:
+        return None
+        
+    return datapackage.get(key, {})
+
+def fetch_and_save_datapackage(server_url: str, password: str = None, 
+                              file_path: str = "datapackage.json") -> bool:
+    """
+    Fetch the Archipelago datapackage from the server and save it locally.
+    
+    This is a utility function that combines the fetching operation with the saving operation.
+    It delegates to server_helpers.fetch_server_data for the actual server connection.
+    
+    Args:
+        server_url: Archipelago server URL
+        password: Server password (optional)
+        file_path: Path to save the datapackage (default: datapackage.json)
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        # Import here to avoid circular imports
+        from helpers.server_helpers import fetch_server_data
+        
+        # Delete any existing datapackage first
+        delete_local_datapackage(file_path)
+        
+        # Fetch server data (this is an async function, so we need to run it in an event loop)
+        import asyncio
+        server_data = asyncio.run(fetch_server_data(server_url, password))
+        
+        if not server_data:
+            logger.error(f"Failed to fetch server data from {server_url}")
+            return False
+            
+        # Extract game_data and players from server_data
+        game_data = server_data.get("game_data", {})
+        players = server_data.get("players", {})
+        
+        # Create a compatible connection_data structure
+        connection_data = {
+            server_url: {
+                "slot_info": {str(player_id): player_info for player_id, player_info in players.items()}
+            }
+        }
+        
+        # Save the datapackage locally
+        return save_datapackage_locally(game_data, connection_data, file_path)
+    except Exception as e:
+        logger.error(f"Error fetching and saving datapackage: {e}")
+        return False
