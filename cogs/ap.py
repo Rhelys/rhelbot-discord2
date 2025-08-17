@@ -432,6 +432,16 @@ class ApCog(commands.GroupCog, group_name="ap"):
                             print(f"Skipping ItemSend involving Rhelbot tracker")
                             return
                         
+                        # Check if the recipient player has completed 100% of their locations
+                        recipient_id_int = int(recipient_id)
+                        
+                        # Only perform the completion check if we have save data loaded
+                        # Try to load save data if needed
+                        save_data = load_apsave_data(self.output_directory, self.AP_DIR)
+                        if save_data and self.is_player_completed(recipient_id_int, save_data):
+                            print(f"Skipping ItemSend to player {recipient_name} who has completed 100% of locations")
+                            return
+                            
                         # Get the recipient's game to look up item and location names
                         recipient_game = self.lookup_player_game(int(recipient_id))
                         sender_game = self.lookup_player_game(int(sender_id))
@@ -1955,6 +1965,23 @@ class ApCog(commands.GroupCog, group_name="ap"):
     def get_hint_cost(self, player_id: int, save_data: dict) -> int:
         """Get the cost of the next hint for a specific player"""
         return get_hint_cost(player_id, save_data, self.get_player_total_locations)
+        
+    def is_player_completed(self, player_id: int, save_data: dict) -> bool:
+        """Check if a player has completed 100% of their locations"""
+        # Get checked locations for this player from save data
+        # location_checks format: {(team, slot): set of location_ids}
+        checked_locations = save_data.get("location_checks", {}).get((0, player_id), set())  # Assuming team 0
+        checked_count = len(checked_locations)
+        
+        # Get total locations for this player
+        total_locations = self.get_player_total_locations(player_id, save_data)
+        
+        # Calculate completion percentage
+        if total_locations > 0:
+            percentage = (checked_count / total_locations) * 100
+            return percentage >= 100.0
+        
+        return False  # If we can't determine locations, assume not complete
 
     @app_commands.command(
         name="hints",
@@ -2162,27 +2189,37 @@ class ApCog(commands.GroupCog, group_name="ap"):
                 # Sort hints by finding player name
                 sorted_requested_hints = []
                 for hint in requested_hints:
-                    finding_player_name = all_players.get(hint.finding_player, {}).get("name", f"Player {hint.finding_player}")
+                    finding_player_id = hint.finding_player
+                    finding_player_name = all_players.get(finding_player_id, {}).get("name", f"Player {finding_player_id}")
+                    
+                    # Skip hints from players who have completed 100% of their locations
+                    if save_data and self.is_player_completed(finding_player_id, save_data):
+                        print(f"Skipping hint from player {finding_player_name} who has completed 100% of locations")
+                        continue
+                        
                     sorted_requested_hints.append((finding_player_name.lower(), hint, finding_player_name))
                 
-                sorted_requested_hints.sort(key=lambda x: x[0])
-                
-                for _, hint, finding_player_name in sorted_requested_hints:
-                    # Look up item and location names
-                    receiving_game = all_players.get(hint.receiving_player, {}).get("game", "Unknown")
-                    finder_game = all_players.get(hint.finding_player, {}).get("game", "Unknown")
+                if not sorted_requested_hints:
+                    hint_lines.append("📝 No hints from players who have not completed their locations.")
+                else:
+                    sorted_requested_hints.sort(key=lambda x: x[0])
                     
-                    # Get item name (from receiving player's game)
-                    item_name = self.lookup_item_name(receiving_game, hint.item) if game_data else f"Item {hint.item}"
-                    
-                    # Get location name (from finding player's game)
-                    location_name = self.lookup_location_name(finder_game, hint.location) if game_data else f"Location {hint.location}"
-                    
-                    # Status indicator
-                    status_indicator = " ✅" if hint.found else ""
-                    
-                    hint_lines.append(f"└ **{item_name}** ← {finding_player_name}")
-                    hint_lines.append(f"  📍 *{location_name}* {status_indicator}")
+                    for _, hint, finding_player_name in sorted_requested_hints:
+                        # Look up item and location names
+                        receiving_game = all_players.get(hint.receiving_player, {}).get("game", "Unknown")
+                        finder_game = all_players.get(hint.finding_player, {}).get("game", "Unknown")
+                        
+                        # Get item name (from receiving player's game)
+                        item_name = self.lookup_item_name(receiving_game, hint.item) if game_data else f"Item {hint.item}"
+                        
+                        # Get location name (from finding player's game)
+                        location_name = self.lookup_location_name(finder_game, hint.location) if game_data else f"Location {hint.location}"
+                        
+                        # Status indicator
+                        status_indicator = " ✅" if hint.found else ""
+                        
+                        hint_lines.append(f"└ **{item_name}** ← {finding_player_name}")
+                        hint_lines.append(f"  📍 *{location_name}* {status_indicator}")
         
         else:
             # Show all players' hints (original behavior)
@@ -2216,27 +2253,37 @@ class ApCog(commands.GroupCog, group_name="ap"):
                 player_hints = hints_by_finder[finding_player]
                 sorted_hints = []
                 for hint in player_hints:
-                    receiving_player_name = all_players.get(hint.receiving_player, {}).get("name", f"Player {hint.receiving_player}")
+                    receiving_player_id = hint.receiving_player
+                    receiving_player_name = all_players.get(receiving_player_id, {}).get("name", f"Player {receiving_player_id}")
+                    
+                    # Skip hints for players who have completed 100% of their locations
+                    if save_data and self.is_player_completed(receiving_player_id, save_data):
+                        print(f"Skipping hint for player {receiving_player_name} who has completed 100% of locations")
+                        continue
+                        
                     sorted_hints.append((receiving_player_name.lower(), hint, receiving_player_name))
                 
-                sorted_hints.sort(key=lambda x: x[0])
-                
-                for _, hint, receiving_player_name in sorted_hints:
-                    # Look up item and location names
-                    receiving_game = all_players.get(hint.receiving_player, {}).get("game", "Unknown")
-                    finder_game = all_players.get(hint.finding_player, {}).get("game", "Unknown")
+                if not sorted_hints:
+                    hint_lines.append("📝 No hints for players who have not completed their locations.")
+                else:
+                    sorted_hints.sort(key=lambda x: x[0])
                     
-                    # Get item name (from receiving player's game)
-                    item_name = self.lookup_item_name(receiving_game, hint.item) if game_data else f"Item {hint.item}"
-                    
-                    # Get location name (from finding player's game)
-                    location_name = self.lookup_location_name(finder_game, hint.location) if game_data else f"Location {hint.location}"
-                    
-                    # Status indicator
-                    status_indicator = " ✅" if hint.found else ""
-                    
-                    hint_lines.append(f"└ **{item_name}** → {receiving_player_name}")
-                    hint_lines.append(f"  📍 *{location_name}* {status_indicator}")
+                    for _, hint, receiving_player_name in sorted_hints:
+                        # Look up item and location names
+                        receiving_game = all_players.get(hint.receiving_player, {}).get("game", "Unknown")
+                        finder_game = all_players.get(hint.finding_player, {}).get("game", "Unknown")
+                        
+                        # Get item name (from receiving player's game)
+                        item_name = self.lookup_item_name(receiving_game, hint.item) if game_data else f"Item {hint.item}"
+                        
+                        # Get location name (from finding player's game)
+                        location_name = self.lookup_location_name(finder_game, hint.location) if game_data else f"Location {hint.location}"
+                        
+                        # Status indicator
+                        status_indicator = " ✅" if hint.found else ""
+                        
+                        hint_lines.append(f"└ **{item_name}** → {receiving_player_name}")
+                        hint_lines.append(f"  📍 *{location_name}* {status_indicator}")
                 
                 hint_lines.append("")  # Empty line between players
         
