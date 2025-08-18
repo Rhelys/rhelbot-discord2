@@ -49,9 +49,15 @@ class ApCog(commands.GroupCog, group_name="ap"):
         self.server_process = None
         self.player = ""
         self.game = ""
+        
+        # Create instance attributes for class constants for compatibility
+        self.output_directory = self.OUTPUT_DIR
+        self.ap_directory = self.AP_DIR
+        self.system_extensions = self.SYSTEM_EXTENSIONS
+        self.status_file = self.STATUS_FILE
 
     def resolve_player_name(self, discord_user_id: int, player_input: str):
-        """Resolve 'me' to the Discord user's registered player name, or return the input as-is."""
+        """Resolve 'me' to the Discord user's registered player name(s), or return the input as-is."""
         if player_input.lower() != "me":
             return player_input
             
@@ -62,7 +68,18 @@ class ApCog(commands.GroupCog, group_name="ap"):
         try:
             with open(status_file, 'r') as f:
                 game_status = json.load(f)
-            return game_status.get("discord_users", {}).get(str(discord_user_id))
+            
+            # Get the list of player names for this Discord user
+            player_names = game_status.get("discord_users", {}).get(str(discord_user_id), [])
+            
+            if not player_names:
+                return None
+            elif len(player_names) == 1:
+                # If there's only one player, return it directly
+                return player_names[0]
+            else:
+                # If there are multiple players, return the list of names
+                return player_names
         except (json.JSONDecodeError, IOError):
             return None
 
@@ -77,14 +94,23 @@ class ApCog(commands.GroupCog, group_name="ap"):
             )
 
     def list_players(self):
+        """
+        Get a dictionary of current players and their games.
+        
+        Returns:
+            dict: Dictionary mapping player names to their game names
+        """
+        from helpers.data_helpers import load_game_status
+        
         current_players = {}
-
-        # Pulling the list of current players in the game for reference/comparison
-        with open(self.status_file) as status:
-            for line in status:
-                name, file = line.rstrip("\n").split(":")
-                current_players[name.capitalize()] = file
-
+        game_status = load_game_status("game_status.json")
+        
+        # Extract players from the game status
+        players_data = game_status.get("players", {})
+        for player_name, player_info in players_data.items():
+            game = player_info.get("game", "Unknown")
+            current_players[player_name] = game
+            
         return current_players
 
     async def websocket_listener(self, server_url: str, channel_id: int, password: str = None):
@@ -580,6 +606,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
         if not server_url:
             server_url = "ws://ap.rhelys.com:38281"  # Default server URL
             try:
+                from helpers.server_helpers import get_server_password
                 password = get_server_password()  # Read password from file
             except Exception as e:
                 await interaction.followup.send(f"❌ Server password error: {str(e)}")
@@ -835,6 +862,10 @@ class ApCog(commands.GroupCog, group_name="ap"):
                     with open(status_file, 'w') as f:
                         json.dump(game_status, f, indent=2)
                     
+                    # Set the player and game class variables before calling upload_success
+                    self.player = player_name
+                    self.game = game_name
+                    
                     await self.upload_success(filepath, interaction)
                 else:
                     await interaction.channel.send(
@@ -852,11 +883,21 @@ class ApCog(commands.GroupCog, group_name="ap"):
                 }
                 
                 # Record Discord user to player mapping
-                game_status["discord_users"][str(interaction.user.id)] = player_name
+                user_id_str = str(interaction.user.id)
+                if user_id_str not in game_status["discord_users"]:
+                    game_status["discord_users"][user_id_str] = []
+                
+                # Add the new player to the user's list of players if not already there
+                if player_name not in game_status["discord_users"][user_id_str]:
+                    game_status["discord_users"][user_id_str].append(player_name)
                 
                 # Save updated game status
                 with open(status_file, 'w') as f:
                     json.dump(game_status, f, indent=2)
+                
+                # Set the player and game class variables before calling upload_success
+                self.player = player_name
+                self.game = game_name
                 
                 await self.upload_success(filepath, interaction)
 
@@ -1020,6 +1061,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
 
         # Keep the server started message simple to avoid character limit issues
         try:
+            from helpers.server_helpers import get_server_password
             server_password = get_server_password()
             server_message = f"Archipelago server started.\nServer: ap.rhelys.com\nPort: 38281\nPassword: {server_password}"
             await interaction.edit_original_response(content=server_message)
@@ -1032,7 +1074,8 @@ class ApCog(commands.GroupCog, group_name="ap"):
                 # Give the server a moment to fully initialize
                 await asyncio.sleep(5)
                 
-                success = fetch_and_save_datapackage("ws://ap.rhelys.com:38281", server_password)
+                # Use await with the async function
+                success = await fetch_and_save_datapackage("ws://ap.rhelys.com:38281", server_password)
                 if success:
                     logger.info("Successfully saved datapackage after server start")
                 else:
@@ -1463,7 +1506,8 @@ class ApCog(commands.GroupCog, group_name="ap"):
             await sleep(8)  # Give server time to start
             
             try:
-                server_password = self.get_server_password()
+                from helpers.server_helpers import get_server_password
+                server_password = get_server_password()
                 restart_message = "✅ Archipelago server restarted successfully!\n" \
                                  f"Server: ap.rhelys.com\nPort: 38281\nPassword: {server_password}"
                 
@@ -1475,7 +1519,8 @@ class ApCog(commands.GroupCog, group_name="ap"):
                     # Give the server a moment to fully initialize
                     await asyncio.sleep(5)
                     
-                    success = fetch_and_save_datapackage("ws://ap.rhelys.com:38281", server_password)
+                    # Use await with the async function
+                    success = await fetch_and_save_datapackage("ws://ap.rhelys.com:38281", server_password)
                     if success:
                         logger.info("Successfully saved datapackage after server restart")
                     else:
@@ -1577,7 +1622,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
             checked_count = len(checked_locations)
             
             # Get total locations for this player from the actual multiworld data
-            total_locations = self.get_player_total_locations(player_id, save_data)
+            total_locations = get_player_total_locations(player_id, save_data)
             
             # Calculate percentage
             if total_locations > 0:
@@ -1625,7 +1670,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
             checked_count = len(checked_locations)
             
             # Get total locations for this player
-            player_total_locations = self.get_player_total_locations(player_id, save_data)
+            player_total_locations = get_player_total_locations(player_id, save_data)
             
             total_checked += checked_count
             total_locations += player_total_locations
@@ -1669,302 +1714,114 @@ class ApCog(commands.GroupCog, group_name="ap"):
     
     
     def parse_apsave_alternative(self, apsave_file):
-        """Alternative method to parse .apsave file without full Archipelago dependencies"""
-        import pickle
-        import zlib
-        from pathlib import Path
+        """
+        Alternative method to parse .apsave file without full Archipelago dependencies
         
-        # Create a custom unpickler that can handle missing modules
-        class SafeUnpickler(pickle.Unpickler):
-            def find_class(self, module, name):
-                # Handle NetUtils classes by creating simple replacements
-                if module == 'NetUtils':
-                    if name == 'NetworkItem':
-                        # Create a simple class to hold NetworkItem data
-                        class NetworkItem:
-                            def __init__(self, item, location, player, flags=0):
-                                self.item = item
-                                self.location = location
-                                self.player = player
-                                self.flags = flags
-                        return NetworkItem
-                    elif name == 'Hint':
-                        # Create a proper Hint class that matches the NetUtils.Hint structure
-                        # NetUtils.Hint is a NamedTuple, so we need to handle it differently
-                        from collections import namedtuple
-                        
-                        # Create a NamedTuple-like class that can handle pickle reconstruction
-                        class Hint(namedtuple('Hint', ['receiving_player', 'finding_player', 'location', 'item', 'found', 'entrance', 'item_flags', 'status'])):
-                            def __new__(cls, receiving_player=0, finding_player=0, location=0, item=0, found=False, entrance="", item_flags=0, status=0):
-                                return super().__new__(cls, receiving_player, finding_player, location, item, found, entrance, item_flags, status)
-                            
-                            def __repr__(self):
-                                return f"Hint(receiving_player={self.receiving_player}, finding_player={self.finding_player}, location={self.location}, item={self.item}, found={self.found}, item_flags={self.item_flags})"
-                        
-                        return Hint
-                    elif name == 'HintStatus':
-                        # Create a proper HintStatus enum-like class that handles pickle reconstruction
-                        class HintStatus:
-                            NO_HINT = 0
-                            HINT = 1
-                            PRIORITY = 2
-                            AVOID = 3
-                            
-                            def __init__(self, value=0):
-                                self.value = value
-                            
-                            def __new__(cls, value=0):
-                                # Handle both normal construction and pickle reconstruction
-                                obj = object.__new__(cls)
-                                obj.value = value
-                                return obj
-                            
-                            def __reduce__(self):
-                                # Support for pickle
-                                return (self.__class__, (self.value,))
-                            
-                            def __repr__(self):
-                                status_names = {0: 'NO_HINT', 1: 'HINT', 2: 'PRIORITY', 3: 'AVOID'}
-                                return f"HintStatus.{status_names.get(self.value, 'UNKNOWN')}"
-                        return HintStatus
-                    else:
-                        # For other NetUtils classes, create a generic placeholder
-                        class GenericNetUtilsClass:
-                            def __init__(self, *args, **kwargs):
-                                pass
-                        return GenericNetUtilsClass
-                
-                # For other missing modules, try to import normally
-                try:
-                    return super().find_class(module, name)
-                except (ImportError, AttributeError):
-                    # If we can't import it, create a generic placeholder
-                    class GenericClass:
-                        def __init__(self, *args, **kwargs):
-                            pass
-                    return GenericClass
+        This method delegates to the helper function in data_helpers.py
         
-        try:
-            with open(apsave_file, 'rb') as f:
-                compressed_data = f.read()
+        Args:
+            apsave_file: Path to the .apsave file to parse
             
-            # Decompress the data
-            decompressed_data = zlib.decompress(compressed_data)
-            
-            # Use our custom unpickler
-            import io
-            unpickler = SafeUnpickler(io.BytesIO(decompressed_data))
-            save_data = unpickler.load()
-            
-            print(f"Successfully loaded save data using alternative method from {apsave_file}")
-            return save_data
-            
-        except Exception as e:
-            print(f"Alternative parsing failed: {e}")
-            raise e
+        Returns:
+            Parsed save data dictionary
+        """
+        return parse_apsave_alternative(apsave_file)
     
     def is_server_running(self) -> bool:
-        """Check if the Archipelago server is currently running"""
-        try:
-            import psutil
-            
-            # Check for MultiServer.py processes
-            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-                try:
-                    if (proc.info['name'] and 'python' in proc.info['name'].lower() and 
-                        proc.info['cmdline'] and any('MultiServer.py' in arg for arg in proc.info['cmdline'])):
-                        return True
-                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                    pass
-                    
-        except ImportError:
-            # Fallback: check if tracked process is still running
-            if self.server_process:
-                try:
-                    # Check if process is still running
-                    return self.server_process.poll() is None
-                except:
-                    pass
-        
-        return False
+        """
+        Check if the Archipelago server is currently running
+        (Delegating to helpers.server_helpers.is_server_running)
+        """
+        from helpers.server_helpers import is_server_running
+        return is_server_running(self.server_process)
     
     def extract_player_data_from_save(self, save_data):
-        """Extract player and game data from save file when websocket connection is not available"""
-        all_players = {}
-        game_data = {}
+        """
+        Extract player and game data from save file when websocket connection is not available
         
-        # Try to extract player names from connect_names in save data
-        connect_names = save_data.get("connect_names", {})
+        This method delegates to the helper function in data_helpers.py
         
-        # connect_names format: {player_name: (team, slot)}
-        for player_name, (team, slot) in connect_names.items():
-            if team == 0:  # Assuming team 0
-                all_players[slot] = {
-                    "name": player_name,
-                    "game": "Unknown"  # We can't easily get game info from save file alone
-                }
-        
-        # If we couldn't get players from connect_names, try to infer from location_checks
-        if not all_players:
-            location_checks = save_data.get("location_checks", {})
-            for (team, slot) in location_checks.keys():
-                if team == 0:  # Assuming team 0
-                    all_players[slot] = {
-                        "name": f"Player {slot}",
-                        "game": "Unknown"
-                    }
-        
-        # Note: We can't easily extract game data from the save file since it doesn't contain
-        # the full DataPackage. This would require loading the original .archipelago file.
-        # For now, we'll return empty game_data and show progress without total counts.
-        
-        return all_players, game_data
+        Args:
+            save_data: The parsed save data dictionary
+            
+        Returns:
+            Tuple containing player data and game data dictionaries
+        """
+        return extract_player_data_from_save(save_data)
     
+    def get_server_password(self, password_file: str = "server_password.txt") -> str:
+        """
+        Read the server password from server_password.txt file.
+        
+        This method delegates to the helper function in server_helpers.py
+        
+        Args:
+            password_file: Path to the password file
+            
+        Returns:
+            The server password as a string
+        """
+        return get_server_password(password_file)
+
     def _create_connection_message(self, password: str = None) -> dict:
-        """Create a standard Archipelago connection message"""
-        import uuid
-        return {
-            "cmd": "Connect",
-            "game": "",
-            "password": password,
-            "name": "Rhelbot",
-            "version": {"major": 0, "minor": 6, "build": 0, "class": "Version"},
-            "tags": ["Tracker"],
-            "items_handling": 0b000,
-            "uuid": uuid.getnode()
-        }
+        """
+        Create a standard Archipelago connection message
+        (Delegating to helpers.server_helpers.create_connection_message)
+        """
+        from helpers.server_helpers import create_connection_message
+        return create_connection_message(password)
 
     async def _connect_to_server(self, server_url: str, timeout: float = 15.0):
-        """Create a websocket connection to the Archipelago server"""
-        return await asyncio.wait_for(
-            websockets.connect(
-                server_url, 
-                ping_interval=20,
-                ping_timeout=10,
-                close_timeout=10,
-                max_size=None,
-                compression="deflate"
-            ),
-            timeout=timeout
-        )
+        """
+        Create a websocket connection to the Archipelago server
+        (Delegating to helpers.server_helpers.connect_to_server)
+        """
+        from helpers.server_helpers import connect_to_server
+        return await connect_to_server(server_url, timeout)
 
-    async def fetch_server_data(self, server_url: str = "ws://ap.rhelys.com:38281", password: str = None):
-        """Connect to server temporarily to fetch player and game data"""
-        try:
-            print(f"Attempting to fetch server data from {server_url}")
+    async def fetch_server_data(self, server_url: str = "ws://ap.rhelys.com:38281", password: str = None, save_datapackage: bool = False):
+        """
+        Connect to server temporarily to fetch player and game data.
+        
+        This method delegates to the helper function in server_helpers.py
+        
+        Args:
+            server_url: Archipelago server URL
+            password: Server password (optional)
+            save_datapackage: Whether to save the datapackage locally (default: False)
             
-            # If no password provided, read from file
-            if password is None:
-                try:
-                    password = self.get_server_password()
-                except Exception as e:
-                    print(f"Error reading server password: {e}")
-                    return None
-            
-            # Connect to the Archipelago websocket server
-            websocket = await self._connect_to_server(server_url)
-            
-            try:
-                # Send connection message
-                connect_msg = self._create_connection_message(password)
-                await websocket.send(json.dumps([connect_msg]))
-                print("Sent connection message for data fetch")
-                
-                # Wait for connection confirmation and collect data
-                connection_data = None
-                game_data = {}
-                timeout_counter = 0
-                max_timeout = 30  # 30 seconds total timeout
-                
-                while timeout_counter < max_timeout:
-                    try:
-                        message = await asyncio.wait_for(websocket.recv(), timeout=1.0)
-                        data = json.loads(message)
-                        
-                        for msg in data:
-                            cmd = msg.get("cmd", "")
-                            
-                            if cmd == "Connected":
-                                print("Connected to server for data fetch")
-                                connection_data = msg
-                                
-                                # Request DataPackage for games in use
-                                slot_info = msg.get("slot_info", {})
-                                games_in_use = list(set(player_info.get("game", "") for player_info in slot_info.values()))
-                                games_in_use = [game for game in games_in_use if game]
-                                
-                                if games_in_use:
-                                    get_data_msg = {"cmd": "GetDataPackage", "games": games_in_use}
-                                    print(f"Requesting DataPackage for games: {games_in_use}")
-                                else:
-                                    get_data_msg = {"cmd": "GetDataPackage"}
-                                    print("Requesting full DataPackage")
-                                
-                                await websocket.send(json.dumps([get_data_msg]))
-                                
-                            elif cmd == "ConnectionRefused":
-                                print(f"Connection refused: {msg.get('errors', [])}")
-                                return None
-                                
-                            elif cmd == "DataPackage":
-                                print("Received DataPackage")
-                                games = msg.get("data", {}).get("games", {})
-                                game_data = games
-                                
-                                # If we have both connection data and game data, we're done
-                                if connection_data and game_data:
-                                    break
-                        
-                        # If we have both pieces of data, break out of the timeout loop
-                        if connection_data and game_data:
-                            break
-                            
-                    except asyncio.TimeoutError:
-                        timeout_counter += 1
-                        continue
-                
-                # Process the collected data
-                if connection_data:
-                    all_players = {}
-                    slot_info = connection_data.get("slot_info", {})
-                    
-                    for slot_id, player_info in slot_info.items():
-                        player_id = int(slot_id)
-                        all_players[player_id] = {
-                            "name": player_info.get("name", f"Player {player_id}"),
-                            "game": player_info.get("game", "Unknown")
-                        }
-                    
-                    print(f"Successfully fetched data for {len(all_players)} players and {len(game_data)} games")
-                    return {
-                        "players": all_players,
-                        "game_data": game_data
-                    }
-                else:
-                    print("Failed to get connection data from server")
-                    return None
-                    
-            finally:
-                await websocket.close()
-                
-        except Exception as e:
-            print(f"Error fetching server data: {e}")
-            return None
+        Returns:
+            Dictionary containing players and game_data, or None on failure
+        """
+        from helpers.server_helpers import fetch_server_data
+        return await fetch_server_data(server_url, password, save_datapackage)
     
     
     
     
     def create_progress_bar(self, percentage: float, length: int = 20) -> str:
-        """Create a visual progress bar"""
+        """
+        Create a visual progress bar
+        (Delegating to helpers.formatting_helpers.create_progress_bar)
+        """
+        from helpers.formatting_helpers import create_progress_bar
         return create_progress_bar(percentage, length)
     
     def get_player_hint_points(self, player_id: int, save_data: dict) -> int:
-        """Get the current hint points for a specific player"""
-        return get_player_hint_points(player_id, save_data, self.get_player_total_locations)
+        """
+        Get the current hint points for a specific player
+        (Delegating to helpers.progress_helpers.get_player_hint_points)
+        """
+        from helpers.progress_helpers import get_player_hint_points
+        return get_player_hint_points(player_id, save_data, get_player_total_locations)
     
     def get_hint_cost(self, player_id: int, save_data: dict) -> int:
-        """Get the cost of the next hint for a specific player"""
-        return get_hint_cost(player_id, save_data, self.get_player_total_locations)
+        """
+        Get the cost of the next hint for a specific player
+        (Delegating to helpers.progress_helpers.get_hint_cost)
+        """
+        from helpers.progress_helpers import get_hint_cost
+        return get_hint_cost(player_id, save_data, get_player_total_locations)
         
     def is_player_completed(self, player_id: int, save_data: dict) -> bool:
         """Check if a player has completed 100% of their locations"""
@@ -1974,7 +1831,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
         checked_count = len(checked_locations)
         
         # Get total locations for this player
-        total_locations = self.get_player_total_locations(player_id, save_data)
+        total_locations = get_player_total_locations(player_id, save_data)
         
         # Calculate completion percentage
         if total_locations > 0:
@@ -1994,14 +1851,14 @@ class ApCog(commands.GroupCog, group_name="ap"):
         await interaction.response.defer()
         
         # Check if server is running first
-        server_running = self.is_server_running()
+        server_running = is_server_running()
         
         if not server_running:
             await interaction.followup.send("❌ Archipelago server is not running. Use `/ap start` to start the server first.")
             return
         
         # Load save data to get hints
-        save_data = self.load_apsave_data()
+        save_data = load_apsave_data()
         if not save_data:
             await interaction.followup.send("❌ Could not load save data. Make sure the Archipelago server has a save file.")
             return
@@ -2057,7 +1914,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
                 self.connection_data["temp_fetch"] = {"slot_info": {str(k): v for k, v in all_players.items()}}
             else:
                 # Fallback: try to extract basic data from save file
-                all_players, game_data = self.extract_player_data_from_save(save_data)
+                all_players, game_data = extract_player_data_from_save(save_data)
         
         # Filter hints for key items (item_flags = 1) and acceptable statuses
         # Status filtering: Include "Found" and "Priority", exclude "No Priority" and "Avoid"

@@ -351,7 +351,7 @@ def get_from_datapackage(key: str, file_path: str = "datapackage.json") -> Optio
         
     return datapackage.get(key, {})
 
-def fetch_and_save_datapackage(server_url: str, password: str = None, 
+async def fetch_and_save_datapackage(server_url: str, password: str = None, 
                               file_path: str = "datapackage.json") -> bool:
     """
     Fetch the Archipelago datapackage from the server and save it locally.
@@ -374,9 +374,8 @@ def fetch_and_save_datapackage(server_url: str, password: str = None,
         # Delete any existing datapackage first
         delete_local_datapackage(file_path)
         
-        # Fetch server data (this is an async function, so we need to run it in an event loop)
-        import asyncio
-        server_data = asyncio.run(fetch_server_data(server_url, password))
+        # Fetch server data - directly await the async function
+        server_data = await fetch_server_data(server_url, password)
         
         if not server_data:
             logger.error(f"Failed to fetch server data from {server_url}")
@@ -393,8 +392,9 @@ def fetch_and_save_datapackage(server_url: str, password: str = None,
             }
         }
         
-        # Save the datapackage locally
-        return save_datapackage_locally(game_data, connection_data, file_path)
+        # Save the datapackage locally - this returns a boolean, not a coroutine
+        result = save_datapackage_locally(game_data, connection_data, file_path)
+        return result
     except Exception as e:
         logger.error(f"Error fetching and saving datapackage: {e}")
         return False
