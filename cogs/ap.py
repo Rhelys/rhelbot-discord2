@@ -57,31 +57,90 @@ class ApCog(commands.GroupCog, group_name="ap"):
         self.status_file = self.STATUS_FILE
 
     def resolve_player_name(self, discord_user_id: int, player_input: str):
-        """Resolve 'me' to the Discord user's registered player name(s), or return the input as-is."""
-        if player_input.lower() != "me":
-            return player_input
-            
-        status_file = "game_status.json"
-        if not path.exists(status_file):
-            return None
-            
-        try:
-            with open(status_file, 'r') as f:
-                game_status = json.load(f)
-            
-            # Get the list of player names for this Discord user
-            player_names = game_status.get("discord_users", {}).get(str(discord_user_id), [])
-            
-            if not player_names:
+        """
+        Resolve 'me' or a Discord user mention to the registered player name(s), or return the input as-is.
+        
+        Args:
+            discord_user_id: The Discord ID of the user making the request
+            player_input: The player name input, which could be 'me' or a Discord mention
+        
+        Returns:
+            - A player name string if a single match is found
+            - A list of player names if multiple matches are found
+            - The original input if it's not 'me' or a Discord mention
+            - None if no match is found
+        """
+        # Handle "me" case
+        if player_input.lower() == "me":
+            status_file = "game_status.json"
+            if not path.exists(status_file):
                 return None
-            elif len(player_names) == 1:
-                # If there's only one player, return it directly
-                return player_names[0]
-            else:
-                # If there are multiple players, return the list of names
-                return player_names
-        except (json.JSONDecodeError, IOError):
-            return None
+                
+            try:
+                with open(status_file, 'r') as f:
+                    game_status = json.load(f)
+                
+                # Get the list of player names for this Discord user
+                player_names = game_status.get("discord_users", {}).get(str(discord_user_id), [])
+                
+                if not player_names:
+                    return None
+                elif len(player_names) == 1:
+                    # If there's only one player, return it directly
+                    return player_names[0]
+                else:
+                    # If there are multiple players, return the list of names
+                    return player_names
+            except (json.JSONDecodeError, IOError):
+                return None
+        
+        # Handle Discord mention case (e.g., <@123456789>)
+        mention_match = re.match(r'<@!?(\d+)>', player_input)
+        if mention_match:
+            mentioned_user_id = mention_match.group(1)
+            
+            status_file = "game_status.json"
+            if not path.exists(status_file):
+                return None
+                
+            try:
+                with open(status_file, 'r') as f:
+                    game_status = json.load(f)
+                
+                # Get the list of player names for the mentioned Discord user
+                player_names = game_status.get("discord_users", {}).get(mentioned_user_id, [])
+                
+                if not player_names:
+                    return None
+                elif len(player_names) == 1:
+                    # If there's only one player, return it directly
+                    return player_names[0]
+                else:
+                    # If there are multiple players, return the list of names
+                    return player_names
+            except (json.JSONDecodeError, IOError):
+                return None
+        
+        # If it's a plain username with @ prefix, try to find a matching Discord user
+        if player_input.startswith('@'):
+            username = player_input[1:]  # Remove the @ symbol
+            
+            status_file = "game_status.json"
+            if not path.exists(status_file):
+                return player_input  # Return original if we can't check
+                
+            try:
+                with open(status_file, 'r') as f:
+                    game_status = json.load(f)
+                
+                # We don't have direct access to Discord usernames in the status file,
+                # so we'll have to assume the original input for now
+                return player_input
+            except (json.JSONDecodeError, IOError):
+                return player_input
+        
+        # Return original input if it's not a special case
+        return player_input
 
     async def upload_success(self, filepath: str, interaction: discord.Interaction):
         with open(filepath, "rb") as submitted_file:
@@ -1344,13 +1403,17 @@ class ApCog(commands.GroupCog, group_name="ap"):
             del players[resolved_name]
             
             # Remove from discord_users mapping
-            user_id_to_remove = None
-            for user_id, mapped_player in discord_users.items():
-                if mapped_player == resolved_name:
-                    user_id_to_remove = user_id
+            for user_id, player_list in discord_users.items():
+                if isinstance(player_list, list) and resolved_name in player_list:
+                    player_list.remove(resolved_name)
+                    # If the user has no more players, remove their entry entirely
+                    if not player_list:
+                        del discord_users[user_id]
                     break
-            if user_id_to_remove:
-                del discord_users[user_id_to_remove]
+                elif not isinstance(player_list, list) and player_list == resolved_name:
+                    # Handle legacy single-player format (backwards compatibility)
+                    del discord_users[user_id]
+                    break
             
             # Save updated game status
             with open(status_file, 'w') as f:
@@ -1557,12 +1620,31 @@ class ApCog(commands.GroupCog, group_name="ap"):
         if not server_running:
             await interaction.followup.send("❌ Archipelago server is not running. Use `/ap start` to start the server first.")
             return
+            
+        # Resolve player reference if provided
+        original_player = None
+        target_players = None
+        if player:
+            original_player = player
+            resolved_player = self.resolve_player_name(interaction.user.id, player)
+            if resolved_player is None and player.lower() == "me":
+                await interaction.followup.send("❌ You haven't joined the game yet. Use `/ap join` first.")
+                return
+            elif isinstance(resolved_player, list):
+                # If multiple players are found, show all of them
+                target_players = resolved_player
+                await interaction.followup.send(f"ℹ️ Showing progress for all your players: {', '.join(resolved_player)}")
+            else:
+                target_players = [resolved_player]
         
         # Try to load progress from .apsave file
         save_data = load_apsave_data(self.output_directory, self.ap_directory)
         if not save_data:
             await interaction.followup.send("❌ Could not load save data. Make sure the Archipelago server has a save file.")
             return
+        
+        # Set flag for specific player filtering
+        show_specific_players = (target_players is not None)
         
         # Get player and game data from save file or connection data
         all_players = {}
@@ -1615,6 +1697,10 @@ class ApCog(commands.GroupCog, group_name="ap"):
             # Skip the Rhelbot tracker
             if player_name.lower() == "rhelbot":
                 continue
+                
+            # Filter for specific players if requested
+            if show_specific_players and player_name not in target_players:
+                continue
             
             # Get checked locations for this player from save data
             # location_checks format: {(team, slot): set of location_ids}
@@ -1647,6 +1733,31 @@ class ApCog(commands.GroupCog, group_name="ap"):
             # Store for sorting
             player_progress_data.append((player_name.lower(), player_line))
         
+        # If specific players were requested but none found, show an error message
+        if show_specific_players and not any(p for p in player_progress_data):
+            # List available players for reference
+            available_players = [info["name"] for info in all_players.values() 
+                               if info["name"].lower() != "rhelbot"]
+            
+            # Customize error message based on the original input
+            if original_player and original_player.lower() == "me":
+                await interaction.followup.send(
+                    f"❌ You don't have any players in this game.\n"
+                    f"Available players: {', '.join(available_players)}"
+                )
+            elif original_player and (original_player.startswith('@') or original_player.startswith('<@')):
+                await interaction.followup.send(
+                    f"❌ The mentioned Discord user doesn't have any players in this game.\n"
+                    f"Available players: {', '.join(available_players)}"
+                )
+            else:
+                player_name = target_players[0] if target_players else original_player
+                await interaction.followup.send(
+                    f"❌ Player '{player_name}' not found.\n"
+                    f"Available players: {', '.join(available_players)}"
+                )
+            return
+            
         # Sort alphabetically by player name
         player_progress_data.sort(key=lambda x: x[0])
         
@@ -1857,6 +1968,22 @@ class ApCog(commands.GroupCog, group_name="ap"):
             await interaction.followup.send("❌ Archipelago server is not running. Use `/ap start` to start the server first.")
             return
         
+        # Resolve player reference if provided
+        original_player = None
+        target_players = None
+        if player:
+            original_player = player
+            resolved_player = self.resolve_player_name(interaction.user.id, player)
+            if resolved_player is None and player.lower() == "me":
+                await interaction.followup.send("❌ You haven't joined the game yet. Use `/ap join` first.")
+                return
+            elif isinstance(resolved_player, list):
+                # If multiple players are found, show hints for all of them
+                target_players = resolved_player
+                await interaction.followup.send(f"ℹ️ Showing hints for all your players: {', '.join(resolved_player)}")
+            else:
+                target_players = [resolved_player]
+        
         # Load save data to get hints
         save_data = load_apsave_data()
         if not save_data:
@@ -1968,100 +2095,82 @@ class ApCog(commands.GroupCog, group_name="ap"):
             await interaction.followup.send("📝 No hints found for key items in the current game.")
             return
         
-        # If a specific player is requested, filter hints and show hint points/cost
-        if player:
-            # Find the player ID by name (case-insensitive)
-            target_player_id = None
-            target_player_name = None
+        # If specific players are requested, filter hints and show hint points/cost for each
+        if target_players:
+            # Find the player IDs by name (case-insensitive)
+            target_player_data = {}
             
-            for player_id, player_info in all_players.items():
-                if player_info["name"].lower() == player.lower():
-                    target_player_id = player_id
-                    target_player_name = player_info["name"]
-                    break
+            for target_player_name in target_players:
+                for player_id, player_info in all_players.items():
+                    if player_info["name"].lower() == target_player_name.lower():
+                        target_player_data[player_id] = {
+                            "name": player_info["name"],
+                            "game": player_info["game"]
+                        }
+                        break
             
-            if target_player_id is None:
+            if not target_player_data:
                 # List available players for reference
                 available_players = [info["name"] for info in all_players.values() if info["name"].lower() != "rhelbot"]
-                await interaction.followup.send(
-                    f"❌ Player '{player}' not found.\n"
-                    f"Available players: {', '.join(available_players)}"
-                )
+                
+                # Check if the original player input was "me" or a Discord mention for better error message
+                if original_player and original_player.lower() == "me":
+                    await interaction.followup.send(
+                        f"❌ You don't have any players in this game.\n"
+                        f"Available players: {', '.join(available_players)}"
+                    )
+                elif original_player and (original_player.startswith('@') or original_player.startswith('<@')):
+                    await interaction.followup.send(
+                        f"❌ The mentioned Discord user doesn't have any players in this game.\n"
+                        f"Available players: {', '.join(available_players)}"
+                    )
+                else:
+                    await interaction.followup.send(
+                        f"❌ Player(s) '{', '.join(target_players)}' not found.\n"
+                        f"Available players: {', '.join(available_players)}"
+                    )
                 return
             
-            # Filter hints for this specific player (as the finding player)
-            player_hints = [hint for hint in key_item_hints if hint.finding_player == target_player_id]
-            
-            # Filter hints requested by this player (as the receiving player)
-            requested_hints = [hint for hint in key_item_hints if hint.receiving_player == target_player_id]
-            
-            # Get hint points and cost information (always show these)
-            hint_points = self.get_player_hint_points(target_player_id, save_data)
-            hint_cost = self.get_hint_cost(target_player_id, save_data)
-            
-            # Build the message for specific player
+            # Build the message for specific players
             hint_lines = []
-            hint_lines.append(f"🔑 **Key Item Hints for {target_player_name}**")
-            hint_lines.append(f"💰 **Hint Points**: {hint_points}")
-            hint_lines.append(f"💸 **Next Hint Cost**: {hint_cost}")
-            hint_lines.append("")
             
-            # Section 1: Hints this player has found for others
-            hint_lines.append("## 🔍 **Hint Locations for Others**")
-            if not player_hints:
-                hint_lines.append("📝 No hints found by this player.")
-            else:
-                # Sort hints by receiving player name
-                sorted_hints = []
-                for hint in player_hints:
-                    receiving_player_name = all_players.get(hint.receiving_player, {}).get("name", f"Player {hint.receiving_player}")
-                    sorted_hints.append((receiving_player_name.lower(), hint, receiving_player_name))
-                
-                sorted_hints.sort(key=lambda x: x[0])
-                
-                for _, hint, receiving_player_name in sorted_hints:
-                    # Look up item and location names
-                    receiving_game = all_players.get(hint.receiving_player, {}).get("game", "Unknown")
-                    finder_game = all_players.get(hint.finding_player, {}).get("game", "Unknown")
-                    
-                    # Get item name (from receiving player's game)
-                    item_name = self.lookup_item_name(receiving_game, hint.item) if game_data else f"Item {hint.item}"
-                    
-                    # Get location name (from finding player's game)
-                    location_name = self.lookup_location_name(finder_game, hint.location) if game_data else f"Location {hint.location}"
-                    
-                    # Status indicator
-                    status_indicator = " ✅" if hint.found else ""
-                    
-                    hint_lines.append(f"└ **{item_name}** → {receiving_player_name}")
-                    hint_lines.append(f"  📍 *{location_name}* {status_indicator}")
+            # Sort target players alphabetically by name
+            sorted_target_players = sorted(target_player_data.items(), key=lambda x: x[1]["name"].lower())
             
-            hint_lines.append("")  # Empty line between sections
-            
-            # Section 2: Hints this player has requested from others
-            hint_lines.append("## 🎯 **Hints Requested from Others**")
-            if not requested_hints:
-                hint_lines.append("📝 No hints requested by this player.")
-            else:
-                # Sort hints by finding player name
-                sorted_requested_hints = []
-                for hint in requested_hints:
-                    finding_player_id = hint.finding_player
-                    finding_player_name = all_players.get(finding_player_id, {}).get("name", f"Player {finding_player_id}")
-                    
-                    # Skip hints from players who have completed 100% of their locations
-                    if save_data and self.is_player_completed(finding_player_id, save_data):
-                        print(f"Skipping hint from player {finding_player_name} who has completed 100% of locations")
-                        continue
-                        
-                    sorted_requested_hints.append((finding_player_name.lower(), hint, finding_player_name))
+            if len(target_player_data) == 1:
+                # Single player - use original format
+                target_player_id, target_player_info = list(target_player_data.items())[0]
+                target_player_name = target_player_info["name"]
                 
-                if not sorted_requested_hints:
-                    hint_lines.append("📝 No hints from players who have not completed their locations.")
+                # Filter hints for this specific player (as the finding player)
+                player_hints = [hint for hint in key_item_hints if hint.finding_player == target_player_id]
+                
+                # Filter hints requested by this player (as the receiving player)
+                requested_hints = [hint for hint in key_item_hints if hint.receiving_player == target_player_id]
+                
+                # Get hint points and cost information (always show these)
+                hint_points = self.get_player_hint_points(target_player_id, save_data)
+                hint_cost = self.get_hint_cost(target_player_id, save_data)
+                
+                hint_lines.append(f"🔑 **Key Item Hints for {target_player_name}**")
+                hint_lines.append(f"💰 **Hint Points**: {hint_points}")
+                hint_lines.append(f"💸 **Next Hint Cost**: {hint_cost}")
+                hint_lines.append("")
+                
+                # Section 1: Hints this player has found for others
+                hint_lines.append("## 🔍 **Hint Locations for Others**")
+                if not player_hints:
+                    hint_lines.append("📝 No hints found by this player.")
                 else:
-                    sorted_requested_hints.sort(key=lambda x: x[0])
+                    # Sort hints by receiving player name
+                    sorted_hints = []
+                    for hint in player_hints:
+                        receiving_player_name = all_players.get(hint.receiving_player, {}).get("name", f"Player {hint.receiving_player}")
+                        sorted_hints.append((receiving_player_name.lower(), hint, receiving_player_name))
                     
-                    for _, hint, finding_player_name in sorted_requested_hints:
+                    sorted_hints.sort(key=lambda x: x[0])
+                    
+                    for _, hint, receiving_player_name in sorted_hints:
                         # Look up item and location names
                         receiving_game = all_players.get(hint.receiving_player, {}).get("game", "Unknown")
                         finder_game = all_players.get(hint.finding_player, {}).get("game", "Unknown")
@@ -2075,8 +2184,146 @@ class ApCog(commands.GroupCog, group_name="ap"):
                         # Status indicator
                         status_indicator = " ✅" if hint.found else ""
                         
-                        hint_lines.append(f"└ **{item_name}** ← {finding_player_name}")
+                        hint_lines.append(f"└ **{item_name}** → {receiving_player_name}")
                         hint_lines.append(f"  📍 *{location_name}* {status_indicator}")
+                
+                hint_lines.append("")  # Empty line between sections
+                
+                # Section 2: Hints this player has requested from others
+                hint_lines.append("## 🎯 **Hints Requested from Others**")
+                if not requested_hints:
+                    hint_lines.append("📝 No hints requested by this player.")
+                else:
+                    # Sort hints by finding player name
+                    sorted_requested_hints = []
+                    for hint in requested_hints:
+                        finding_player_id = hint.finding_player
+                        finding_player_name = all_players.get(finding_player_id, {}).get("name", f"Player {finding_player_id}")
+                        
+                        # Skip hints from players who have completed 100% of their locations
+                        if save_data and self.is_player_completed(finding_player_id, save_data):
+                            print(f"Skipping hint from player {finding_player_name} who has completed 100% of locations")
+                            continue
+                            
+                        sorted_requested_hints.append((finding_player_name.lower(), hint, finding_player_name))
+                    
+                    if not sorted_requested_hints:
+                        hint_lines.append("📝 No hints from players who have not completed their locations.")
+                    else:
+                        sorted_requested_hints.sort(key=lambda x: x[0])
+                        
+                        for _, hint, finding_player_name in sorted_requested_hints:
+                            # Look up item and location names
+                            receiving_game = all_players.get(hint.receiving_player, {}).get("game", "Unknown")
+                            finder_game = all_players.get(hint.finding_player, {}).get("game", "Unknown")
+                            
+                            # Get item name (from receiving player's game)
+                            item_name = self.lookup_item_name(receiving_game, hint.item) if game_data else f"Item {hint.item}"
+                            
+                            # Get location name (from finding player's game)
+                            location_name = self.lookup_location_name(finder_game, hint.location) if game_data else f"Location {hint.location}"
+                            
+                            # Status indicator
+                            status_indicator = " ✅" if hint.found else ""
+                            
+                            hint_lines.append(f"└ **{item_name}** ← {finding_player_name}")
+                            hint_lines.append(f"  📍 *{location_name}* {status_indicator}")
+            
+            else:
+                # Multiple players - show them grouped by player
+                hint_lines.append("🔑 **Key Item Hints**\n")
+                
+                for target_player_id, target_player_info in sorted_target_players:
+                    target_player_name = target_player_info["name"]
+                    target_player_game = target_player_info["game"]
+                    
+                    # Filter hints for this specific player (as the finding player)
+                    player_hints = [hint for hint in key_item_hints if hint.finding_player == target_player_id]
+                    
+                    # Filter hints requested by this player (as the receiving player)  
+                    requested_hints = [hint for hint in key_item_hints if hint.receiving_player == target_player_id]
+                    
+                    # Get hint points and cost information
+                    hint_points = self.get_player_hint_points(target_player_id, save_data)
+                    hint_cost = self.get_hint_cost(target_player_id, save_data)
+                    
+                    hint_lines.append(f"## {target_player_name} ({target_player_game})")
+                    hint_lines.append(f"💰 **Hint Points**: {hint_points} | 💸 **Next Hint Cost**: {hint_cost}")
+                    hint_lines.append("")
+                    
+                    # Section 1: Hints this player has found for others
+                    hint_lines.append("### 🔍 **Hint Locations for Others**")
+                    if not player_hints:
+                        hint_lines.append("📝 No hints found by this player.")
+                    else:
+                        # Sort hints by receiving player name
+                        sorted_hints = []
+                        for hint in player_hints:
+                            receiving_player_name = all_players.get(hint.receiving_player, {}).get("name", f"Player {hint.receiving_player}")
+                            sorted_hints.append((receiving_player_name.lower(), hint, receiving_player_name))
+                        
+                        sorted_hints.sort(key=lambda x: x[0])
+                        
+                        for _, hint, receiving_player_name in sorted_hints:
+                            # Look up item and location names
+                            receiving_game = all_players.get(hint.receiving_player, {}).get("game", "Unknown")
+                            finder_game = all_players.get(hint.finding_player, {}).get("game", "Unknown")
+                            
+                            # Get item name (from receiving player's game)
+                            item_name = self.lookup_item_name(receiving_game, hint.item) if game_data else f"Item {hint.item}"
+                            
+                            # Get location name (from finding player's game)
+                            location_name = self.lookup_location_name(finder_game, hint.location) if game_data else f"Location {hint.location}"
+                            
+                            # Status indicator
+                            status_indicator = " ✅" if hint.found else ""
+                            
+                            hint_lines.append(f"└ **{item_name}** → {receiving_player_name}")
+                            hint_lines.append(f"  📍 *{location_name}* {status_indicator}")
+                    
+                    hint_lines.append("")  # Empty line between subsections
+                    
+                    # Section 2: Hints this player has requested from others
+                    hint_lines.append("### 🎯 **Hints Requested from Others**")
+                    if not requested_hints:
+                        hint_lines.append("📝 No hints requested by this player.")
+                    else:
+                        # Sort hints by finding player name
+                        sorted_requested_hints = []
+                        for hint in requested_hints:
+                            finding_player_id = hint.finding_player
+                            finding_player_name = all_players.get(finding_player_id, {}).get("name", f"Player {finding_player_id}")
+                            
+                            # Skip hints from players who have completed 100% of their locations
+                            if save_data and self.is_player_completed(finding_player_id, save_data):
+                                print(f"Skipping hint from player {finding_player_name} who has completed 100% of locations")
+                                continue
+                                
+                            sorted_requested_hints.append((finding_player_name.lower(), hint, finding_player_name))
+                        
+                        if not sorted_requested_hints:
+                            hint_lines.append("📝 No hints from players who have not completed their locations.")
+                        else:
+                            sorted_requested_hints.sort(key=lambda x: x[0])
+                            
+                            for _, hint, finding_player_name in sorted_requested_hints:
+                                # Look up item and location names
+                                receiving_game = all_players.get(hint.receiving_player, {}).get("game", "Unknown")
+                                finder_game = all_players.get(hint.finding_player, {}).get("game", "Unknown")
+                                
+                                # Get item name (from receiving player's game)
+                                item_name = self.lookup_item_name(receiving_game, hint.item) if game_data else f"Item {hint.item}"
+                                
+                                # Get location name (from finding player's game)
+                                location_name = self.lookup_location_name(finder_game, hint.location) if game_data else f"Location {hint.location}"
+                                
+                                # Status indicator
+                                status_indicator = " ✅" if hint.found else ""
+                                
+                                hint_lines.append(f"└ **{item_name}** ← {finding_player_name}")
+                                hint_lines.append(f"  📍 *{location_name}* {status_indicator}")
+                    
+                    hint_lines.append("")  # Empty line between players
         
         else:
             # Show all players' hints (original behavior)
