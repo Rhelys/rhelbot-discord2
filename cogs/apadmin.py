@@ -222,7 +222,18 @@ class ApAdminCog(commands.GroupCog, group_name="apadmin"):
         # Check if we have an active admin session
         session = self.admin_sessions.get(server_url)
         if session and session.get('websocket') and not session['websocket'].closed:
+            print(f"Reusing existing admin session from {session.get('logged_in_at')}")
             return session
+        
+        # Clean up any invalid sessions
+        if session:
+            print("Cleaning up invalid admin session")
+            if session.get('websocket'):
+                try:
+                    await session['websocket'].close()
+                except:
+                    pass
+            del self.admin_sessions[server_url]
         
         try:
             # Get both passwords
@@ -249,7 +260,7 @@ class ApAdminCog(commands.GroupCog, group_name="apadmin"):
             # Wait for connection confirmation with message loop (like ap.py)
             connection_confirmed = False
             timeout_counter = 0
-            max_timeout = 30  # 30 seconds total timeout
+            max_timeout = 15  # 15 seconds total timeout (reduced from 30)
             
             while timeout_counter < max_timeout and not connection_confirmed:
                 try:
@@ -268,25 +279,37 @@ class ApAdminCog(commands.GroupCog, group_name="apadmin"):
                                     
                                     if msg_cmd == "Connected":
                                         connection_confirmed = True
-                                        print("Admin connection confirmed")
+                                        print("Admin connection confirmed via Connected message")
                                         break
                                     elif msg_cmd == "ConnectionRefused":
                                         errors = msg.get("errors", ["Unknown error"])
                                         print(f"Admin connection refused: {', '.join(errors)}")
                                         await websocket.close()
                                         return None
+                                    elif msg_cmd == "PrintJSON":
+                                        # Sometimes the connection is working but we get other messages first
+                                        msg_type = msg.get("type", "")
+                                        if msg_type == "Join":
+                                            print("Detected Join message - connection appears successful")
+                                            connection_confirmed = True
+                                            break
                         
                         # Handle single message
                         elif isinstance(data, dict):
                             msg_cmd = data.get("cmd", "")
                             if msg_cmd == "Connected":
                                 connection_confirmed = True
-                                print("Admin connection confirmed")
+                                print("Admin connection confirmed via Connected message")
                             elif msg_cmd == "ConnectionRefused":
                                 errors = data.get("errors", ["Unknown error"])
                                 print(f"Admin connection refused: {', '.join(errors)}")
                                 await websocket.close()
                                 return None
+                            elif msg_cmd == "PrintJSON":
+                                msg_type = data.get("type", "")
+                                if msg_type == "Join":
+                                    print("Detected Join message - connection appears successful")
+                                    connection_confirmed = True
                         
                         if connection_confirmed:
                             break
@@ -301,9 +324,8 @@ class ApAdminCog(commands.GroupCog, group_name="apadmin"):
                     continue
             
             if not connection_confirmed:
-                print("Connection confirmation timeout")
-                await websocket.close()
-                return None
+                print("Connection confirmation timeout - attempting admin login anyway")
+                # Don't close the websocket, try to proceed - it might still work
             
             # Wait a moment for connection to stabilize
             await asyncio.sleep(1.0)
@@ -348,7 +370,7 @@ class ApAdminCog(commands.GroupCog, group_name="apadmin"):
             
             # Check if websocket is still connected
             if websocket.closed:
-                print("Websocket is closed, removing session")
+                print("Websocket is closed, admin session expired")
                 if server_url in self.admin_sessions:
                     del self.admin_sessions[server_url]
                 return None
@@ -361,10 +383,38 @@ class ApAdminCog(commands.GroupCog, group_name="apadmin"):
             print(f"Sending command message: {json.dumps([command_message])}")
             await websocket.send(json.dumps([command_message]))
             
-            # Wait for response
+            # Wait for response - need to handle command echo vs actual result
             print("Waiting for command response...")
             response_text = await asyncio.wait_for(websocket.recv(), timeout=15.0)
-            print(f"Raw command response: {response_text}")
+            print(f"Raw command response 1: {response_text}")
+            
+            # Check if this is just the command echo - if so, wait for the actual result
+            is_command_echo = False
+            try:
+                echo_data = json.loads(response_text)
+                if isinstance(echo_data, list):
+                    for msg in echo_data:
+                        if isinstance(msg, dict) and msg.get("cmd") == "PrintJSON":
+                            data_items = msg.get("data", [])
+                            for item in data_items:
+                                if isinstance(item, dict) and "text" in item:
+                                    text = item["text"]
+                                    # Check if this is our command being echoed back
+                                    if text.startswith("Rhelbot:") and command in text:
+                                        is_command_echo = True
+                                        print("Detected command echo, waiting for actual result...")
+                                        break
+            except json.JSONDecodeError:
+                pass
+            
+            # If it was a command echo, wait for the next message (the actual result)
+            if is_command_echo:
+                try:
+                    response_text = await asyncio.wait_for(websocket.recv(), timeout=10.0)
+                    print(f"Raw command response 2 (actual result): {response_text}")
+                except asyncio.TimeoutError:
+                    print("Timeout waiting for actual command result")
+                    # Fall back to using the echo if no result comes
             
             # Update last used timestamp
             session['last_used'] = datetime.now()
