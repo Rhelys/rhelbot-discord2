@@ -1738,7 +1738,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
                 if last_activity_timestamp:
                     # Convert to Unix timestamp and format for Discord
                     unix_timestamp = int(last_activity_timestamp)
-                    timestamp_line = f"\n└ Last check time: <t:{unix_timestamp}:f>"
+                    timestamp_line = f"\n└ Last check time: <t:{unix_timestamp}:R>"
                 
                 progress_bar = self.create_progress_bar(percentage)
                 player_line = (
@@ -1753,7 +1753,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
                 if last_activity_timestamp:
                     # Convert to Unix timestamp and format for Discord
                     unix_timestamp = int(last_activity_timestamp)
-                    timestamp_line = f"\n└ Last check time: <t:{unix_timestamp}:f>"
+                    timestamp_line = f"\n└ Last check time: <t:{unix_timestamp}:R>"
                 
                 player_line = (
                     f"**{player_name}** ({player_game})\n"
@@ -2838,9 +2838,9 @@ class ApCog(commands.GroupCog, group_name="ap"):
                 player = user_players[0]
                 if player["last_activity"]:
                     unix_timestamp = int(player["last_activity"])
-                    time_str = f" (last check: <t:{unix_timestamp}:R>)"
+                    time_str = f" - (last check: <t:{unix_timestamp}:R>)"
                 else:
-                    time_str = " (no recorded activity)"
+                    time_str = " - (no recorded activity)"
                 
                 shame_lines.append(f"• {mention} - {player['player_name']} ({player['player_game']}){time_str}")
             else:
@@ -2849,9 +2849,9 @@ class ApCog(commands.GroupCog, group_name="ap"):
                 for player in user_players:
                     if player["last_activity"]:
                         unix_timestamp = int(player["last_activity"])
-                        time_str = f" (last check: <t:{unix_timestamp}:R>)"
+                        time_str = f" - (last check: <t:{unix_timestamp}:R>)"
                     else:
-                        time_str = " (no recorded activity)"
+                        time_str = " - (no recorded activity)"
                     
                     shame_lines.append(f"  └ {player['player_name']} ({player['player_game']}){time_str}")
         
@@ -2859,9 +2859,9 @@ class ApCog(commands.GroupCog, group_name="ap"):
         for player in unknown_players:
             if player["last_activity"]:
                 unix_timestamp = int(player["last_activity"])
-                time_str = f" (last check: <t:{unix_timestamp}:R>)"
+                time_str = f" - (last check: <t:{unix_timestamp}:R>)"
             else:
-                time_str = " (no recorded activity)"
+                time_str = " - (no recorded activity)"
             
             shame_lines.append(f"• **{player['player_name']}** ({player['player_game']}) - Discord user unknown{time_str}")
         
