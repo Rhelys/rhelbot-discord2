@@ -18,6 +18,7 @@ import zlib
 import pickle
 from collections import namedtuple
 import re
+import time
 
 # Import all helper functions
 from helpers.data_helpers import *
@@ -1687,6 +1688,19 @@ class ApCog(commands.GroupCog, group_name="ap"):
         # Get location checks from save data
         location_checks = save_data.get("location_checks", {})
         
+        # Get client activity timers from save data
+        client_activity_timers = save_data.get("client_activity_timers", ())
+        
+        # Convert client_activity_timers to a dictionary for easier lookup
+        activity_timer_dict = {}
+        if isinstance(client_activity_timers, (list, tuple)):
+            for entry in client_activity_timers:
+                if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                    player_key, timestamp = entry[0], entry[1]
+                    if isinstance(player_key, (list, tuple)) and len(player_key) >= 2:
+                        team, slot = player_key[0], player_key[1]
+                        activity_timer_dict[(team, slot)] = timestamp
+        
         # Filter out "Rhelbot" and create a list for sorting
         player_progress_data = []
         
@@ -1718,16 +1732,32 @@ class ApCog(commands.GroupCog, group_name="ap"):
                 # Add checkmark for 100% completion after the game name
                 completion_indicator = " ✅" if is_complete else ""
                 
+                # Get last activity timestamp for this player
+                last_activity_timestamp = activity_timer_dict.get((0, player_id))  # Assuming team 0
+                timestamp_line = ""
+                if last_activity_timestamp:
+                    # Convert to Unix timestamp and format for Discord
+                    unix_timestamp = int(last_activity_timestamp)
+                    timestamp_line = f"\n└ Last check time: <t:{unix_timestamp}:f>"
+                
                 progress_bar = self.create_progress_bar(percentage)
                 player_line = (
-                    f"**{player_name}** ({player_game}) {completion_indicator}\n"
+                    f"**{player_name}** ({player_game}){completion_indicator}\n"
                     f"└ {checked_count}/{total_locations} locations ({percentage:.1f}%)\n"
-                    f"└ {progress_bar}\n"
+                    f"└ {progress_bar}{timestamp_line}\n"
                 )
             else:
+                # Get last activity timestamp for this player
+                last_activity_timestamp = activity_timer_dict.get((0, player_id))  # Assuming team 0
+                timestamp_line = ""
+                if last_activity_timestamp:
+                    # Convert to Unix timestamp and format for Discord
+                    unix_timestamp = int(last_activity_timestamp)
+                    timestamp_line = f"\n└ Last check time: <t:{unix_timestamp}:f>"
+                
                 player_line = (
                     f"**{player_name}** ({player_game})\n"
-                    f"└ {checked_count}/? locations (No location data available)\n"
+                    f"└ {checked_count}/? locations (No location data available){timestamp_line}\n"
                 )
             
             # Store for sorting
@@ -2668,6 +2698,177 @@ class ApCog(commands.GroupCog, group_name="ap"):
             self.lookup_location_name, 
             self.fetch_server_data
         )
+
+    @app_commands.command(
+        name="shame",
+        description="Identify players who haven't checked locations in over 72 hours"
+    )
+    async def ap_shame(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        
+        # Check if server is running first
+        server_running = self.is_server_running()
+        
+        if not server_running:
+            await interaction.followup.send("❌ Archipelago server is not running. Use `/ap start` to start the server first.")
+            return
+            
+        # Load save data
+        save_data = load_apsave_data(self.output_directory, self.ap_directory)
+        if not save_data:
+            await interaction.followup.send("❌ Could not load save data. Make sure the Archipelago server has a save file.")
+            return
+        
+        # Load game status to map players to Discord users
+        game_status = load_game_status()
+        discord_users = game_status.get("discord_users", {})
+        
+        # Get player and game data
+        all_players = {}
+        
+        # Try to get data from active websocket connection first
+        if self.connection_data:
+            for server_key, conn_data in self.connection_data.items():
+                slot_info = conn_data.get("slot_info", {})
+                for slot_id, player_info in slot_info.items():
+                    player_id = int(slot_id)
+                    all_players[player_id] = {
+                        "name": player_info.get("name", f"Player {player_id}"),
+                        "game": player_info.get("game", "Unknown")
+                    }
+        else:
+            # Fallback: connect to server to get data
+            server_data = await self.fetch_server_data()
+            if server_data:
+                all_players = server_data["players"]
+            else:
+                # Final fallback: extract from save file
+                all_players, _ = self.extract_player_data_from_save(save_data)
+        
+        if not all_players:
+            await interaction.followup.send("❌ No players found in the current game.")
+            return
+        
+        # Get activity timers and location checks
+        client_activity_timers = save_data.get("client_activity_timers", ())
+        location_checks = save_data.get("location_checks", {})
+        
+        # Convert activity timers to dictionary
+        activity_timer_dict = {}
+        if isinstance(client_activity_timers, (list, tuple)):
+            for entry in client_activity_timers:
+                if isinstance(entry, (list, tuple)) and len(entry) >= 2:
+                    player_key, timestamp = entry[0], entry[1]
+                    if isinstance(player_key, (list, tuple)) and len(player_key) >= 2:
+                        team, slot = player_key[0], player_key[1]
+                        activity_timer_dict[(team, slot)] = timestamp
+        
+        # Calculate 72 hours ago timestamp
+        seventy_two_hours_ago = time.time() - (72 * 60 * 60)
+        
+        # Find offending players
+        offending_players = []
+        
+        for player_id, player_info in all_players.items():
+            player_name = player_info["name"]
+            player_game = player_info["game"]
+            
+            # Skip the Rhelbot tracker
+            if player_name.lower() == "rhelbot":
+                continue
+            
+            # Check if player has finished their game
+            checked_locations = location_checks.get((0, player_id), set())
+            total_locations = get_player_total_locations(player_id, save_data)
+            
+            if total_locations > 0:
+                percentage = (len(checked_locations) / total_locations) * 100
+                is_complete = percentage >= 100.0
+                
+                # Skip completed players
+                if is_complete:
+                    continue
+            
+            # Check last activity time
+            last_activity_timestamp = activity_timer_dict.get((0, player_id))
+            
+            # If no activity timestamp, consider them inactive
+            if not last_activity_timestamp or last_activity_timestamp < seventy_two_hours_ago:
+                # Find Discord user for this player
+                discord_user_id = None
+                for user_id, user_players in discord_users.items():
+                    if player_name in user_players:
+                        discord_user_id = user_id
+                        break
+                
+                offending_players.append({
+                    "player_name": player_name,
+                    "player_game": player_game,
+                    "discord_user_id": discord_user_id,
+                    "last_activity": last_activity_timestamp
+                })
+        
+        # Build shame message
+        if not offending_players:
+            await interaction.followup.send("🎉 All players are active! No one to shame today.")
+            return
+        
+        # Group players by Discord user for better formatting
+        players_by_user = {}
+        unknown_players = []
+        
+        for player in offending_players:
+            if player["discord_user_id"]:
+                user_id = player["discord_user_id"]
+                if user_id not in players_by_user:
+                    players_by_user[user_id] = []
+                players_by_user[user_id].append(player)
+            else:
+                unknown_players.append(player)
+        
+        shame_lines = ["🔔 **LAZY DONKEY ALERT** 🔔\n"]
+        shame_lines.append("The following players haven't checked locations in over 72 hours:\n")
+        
+        # Process Discord users with known mappings
+        for user_id, user_players in players_by_user.items():
+            mention = f"<@{user_id}>"
+            
+            if len(user_players) == 1:
+                # Single player for this user
+                player = user_players[0]
+                if player["last_activity"]:
+                    unix_timestamp = int(player["last_activity"])
+                    time_str = f" (last check: <t:{unix_timestamp}:R>)"
+                else:
+                    time_str = " (no recorded activity)"
+                
+                shame_lines.append(f"• {mention} - {player['player_name']} ({player['player_game']}){time_str}")
+            else:
+                # Multiple players for this user
+                shame_lines.append(f"• {mention} - Multiple players:")
+                for player in user_players:
+                    if player["last_activity"]:
+                        unix_timestamp = int(player["last_activity"])
+                        time_str = f" (last check: <t:{unix_timestamp}:R>)"
+                    else:
+                        time_str = " (no recorded activity)"
+                    
+                    shame_lines.append(f"  └ {player['player_name']} ({player['player_game']}){time_str}")
+        
+        # Process players with unknown Discord users
+        for player in unknown_players:
+            if player["last_activity"]:
+                unix_timestamp = int(player["last_activity"])
+                time_str = f" (last check: <t:{unix_timestamp}:R>)"
+            else:
+                time_str = " (no recorded activity)"
+            
+            shame_lines.append(f"• **{player['player_name']}** ({player['player_game']}) - Discord user unknown{time_str}")
+        
+        shame_lines.append(f"\n⏰ Get back to checking those locations! The multiworld waits for no one!")
+        
+        shame_message = "\n".join(shame_lines)
+        await interaction.followup.send(shame_message)
 
     @app_commands.command(
         name="help", description="Basic Archipelago setup information and game lists"
