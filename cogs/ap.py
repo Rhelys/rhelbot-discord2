@@ -1617,11 +1617,11 @@ class ApCog(commands.GroupCog, group_name="ap"):
         
         # Check if server is running first
         server_running = self.is_server_running()
-        
+
         if not server_running:
             await interaction.followup.send("❌ Archipelago server is not running. Use `/ap start` to start the server first.")
             return
-            
+
         # Resolve player reference if provided
         original_player = None
         target_players = None
@@ -1637,12 +1637,40 @@ class ApCog(commands.GroupCog, group_name="ap"):
                 await interaction.followup.send(f"ℹ️ Showing progress for all your players: {', '.join(resolved_player)}")
             else:
                 target_players = [resolved_player]
-        
-        # Try to load progress from .apsave file
+
+        # Check if we have active connection data that indicates a current game is running
+        has_active_connection = bool(self.connection_data and self.game_data and self.player_progress)
+
+        # Load save data, but we'll validate it against the active connection if available
         save_data = load_apsave_data(self.output_directory, self.ap_directory)
         if not save_data:
             await interaction.followup.send("❌ Could not load save data. Make sure the Archipelago server has a save file.")
             return
+
+        # If we have an active connection but the save file might be from a different game,
+        # warn the user and prioritize live tracking data over save file location data
+        if has_active_connection:
+            print("Using live tracking data from active WebSocket connection, supplemented by save file structure")
+        else:
+            print("Using save file data - no active connection detected")
+            # When there's no active tracking, we can't be sure the save file is from the current game
+            # Try to validate by checking if the save file is recent relative to server start
+            from pathlib import Path
+            import time
+
+            output_path = Path(self.output_directory)
+            apsave_files = list(output_path.glob("*.apsave"))
+
+            if apsave_files:
+                most_recent_save = max(apsave_files, key=lambda f: f.stat().st_mtime)
+                save_age_minutes = (time.time() - most_recent_save.stat().st_mtime) / 60
+
+                # If the save file is more than 30 minutes old, warn the user
+                if save_age_minutes > 30:
+                    await interaction.edit_original_response(
+                        content=f"⚠️ **Warning**: Using save file data that is {save_age_minutes:.0f} minutes old. "
+                        f"This may not reflect the current game session.\n\n"
+                    )
         
         # Set flag for specific player filtering
         show_specific_players = (target_players is not None)
@@ -1663,14 +1691,29 @@ class ApCog(commands.GroupCog, group_name="ap"):
                     }
             game_data = self.game_data
         else:
-            # If no websocket connection, connect to server to get DataPackage
-            await interaction.edit_original_response(content="📡 Connecting to server to get game data...")
-            
+            # If no websocket connection, connect to server to get current game data and validate against save file
+            await interaction.edit_original_response(content="📡 Connecting to server to get current game data...")
+
             server_data = await self.fetch_server_data()
             if server_data:
                 all_players = server_data["players"]
                 game_data = server_data["game_data"]
-                
+
+                # Validate that current server players match save file players
+                save_players = set()
+                for (team, slot), locations in save_data.get("location_checks", {}).items():
+                    if team == 0:  # Assuming team 0
+                        save_players.add(slot)
+
+                current_players = set(all_players.keys())
+
+                # If players don't match, warn about potential mismatch
+                if save_players and current_players and not save_players.intersection(current_players):
+                    await interaction.edit_original_response(
+                        content="⚠️ **Warning**: Save file players don't match current server players. "
+                        f"This save file appears to be from a different game session.\n\n"
+                    )
+
                 # Store temporarily for the location counting function to use
                 self._temp_player_data = all_players
                 self._temp_game_data = game_data
@@ -1683,10 +1726,41 @@ class ApCog(commands.GroupCog, group_name="ap"):
             return
         
         progress_lines = []
-        progress_lines.append("📊 **Player Progress Report**\n")
+
+        # Add data source indicator to help users understand reliability
+        if has_active_connection:
+            progress_lines.append("📊 **Player Progress Report** (Live Tracking)\n")
+        else:
+            progress_lines.append("📊 **Player Progress Report** (Save File Data)\n")
         
         # Get location checks from save data
         location_checks = save_data.get("location_checks", {})
+
+        # Check for potential save file mismatch if we have active connection data
+        if has_active_connection and all_players:
+            # Check if the players in the connection match those in the save file
+            save_players = set()
+            for (team, slot), locations in location_checks.items():
+                if team == 0:  # Assuming team 0
+                    save_players.add(slot)
+
+            connection_players = set(all_players.keys())
+
+            # If there's a significant mismatch, warn that data might be from different games
+            if save_players and not save_players.intersection(connection_players):
+                await interaction.edit_original_response(
+                    content="⚠️ **Warning**: Save file appears to be from a different game session than currently running. Showing live tracking data where available.\n\n"
+                )
+
+        # Merge with real-time tracking data for most up-to-date information
+        # This ensures we show the latest location checks even if the save file hasn't been updated yet
+        for player_id, real_time_locations in self.player_progress.items():
+            # Get the current save data for this player
+            save_locations = location_checks.get((0, player_id), set())
+
+            # Merge real-time data with save data (union of both sets)
+            merged_locations = save_locations.union(real_time_locations)
+            location_checks[(0, player_id)] = merged_locations
         
         # Get client activity timers from save data
         client_activity_timers = save_data.get("client_activity_timers", ())
@@ -1968,7 +2042,11 @@ class ApCog(commands.GroupCog, group_name="ap"):
         """Check if a player has completed 100% of their locations"""
         # Get checked locations for this player from save data
         # location_checks format: {(team, slot): set of location_ids}
-        checked_locations = save_data.get("location_checks", {}).get((0, player_id), set())  # Assuming team 0
+        save_locations = save_data.get("location_checks", {}).get((0, player_id), set())  # Assuming team 0
+
+        # Merge with real-time tracking data for most up-to-date information
+        real_time_locations = self.player_progress.get(player_id, set())
+        checked_locations = save_locations.union(real_time_locations)
         checked_count = len(checked_locations)
         
         # Get total locations for this player
@@ -2752,6 +2830,12 @@ class ApCog(commands.GroupCog, group_name="ap"):
         # Get activity timers and location checks
         client_activity_timers = save_data.get("client_activity_timers", ())
         location_checks = save_data.get("location_checks", {})
+
+        # Merge with real-time tracking data for most up-to-date information
+        for player_id, real_time_locations in self.player_progress.items():
+            save_locations = location_checks.get((0, player_id), set())
+            merged_locations = save_locations.union(real_time_locations)
+            location_checks[(0, player_id)] = merged_locations
         
         # Convert activity timers to dictionary
         activity_timer_dict = {}
