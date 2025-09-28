@@ -831,7 +831,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
                               and delete the file initially saved
                 5: Add the slot name to the player list and return a success to the user 
     """
-
+    # Todo - Add validation for the player name prior to adding to the game_status file to ensure it will lint
     @app_commands.command(
         name="join",
         description="Adds your yaml config file to the pending Archipelago game",
@@ -974,8 +974,8 @@ class ApCog(commands.GroupCog, group_name="ap"):
     
     """
 
-    # Todo - Find out how to connect the bot to the server + channel for status messages
-    # https://github.com/LegendaryLinux/ArchipelaBot
+    # Todo - pull the server password from the host.yaml file instead of hardcoding it here
+
     @app_commands.command(
         name="start",
         description="Starts the game. Either generates or takes an optional "
@@ -1026,52 +1026,113 @@ class ApCog(commands.GroupCog, group_name="ap"):
                 )
                 return
             
-            # Start the generation process in an interactive window so user can watch progress
+            # Start the generation process and capture output for error detection
             import time
+            import asyncio
             start_time = time.time()
-            
-            # Run the generation in a new interactive command window
-            process = subprocess.Popen([
-                "cmd", "/c", "start", "cmd", "/k", 
+
+            # Run generation with both interactive window and output capture
+            # First, start the interactive window for user visibility
+            interactive_process = subprocess.Popen([
+                "cmd", "/c", "start", "cmd", "/k",
                 "python", "./Archipelago/Generate.py"
             ], shell=True)
-            
-            print(f"Started generation process with PID: {process.pid}")
-            
-            # Wait for generation to complete by monitoring for output files
-            # Since the process launches in a separate window, we can't track it directly
+
+            # Also run a background process to capture output for error detection
+            # Use a temporary directory to avoid duplicate outputs
+            import tempfile
+            temp_dir = tempfile.mkdtemp()
+
+            monitoring_process = subprocess.Popen([
+                "python", "./Archipelago/Generate.py", "--outputpath", temp_dir
+            ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=".")
+
+            print(f"Started generation processes - Interactive PID: {interactive_process.pid}, Monitoring PID: {monitoring_process.pid}")
+
             generation_timeout = 1200  # 20 minutes timeout
-            check_interval = 10  # Check every 10 seconds
+            check_interval = 5  # Check every 5 seconds for faster error detection
             elapsed_time = 0
-            
+
             await interaction.edit_original_response(
-                content="🔄 Generation running in interactive window... Monitoring for completion..."
+                content="🔄 Generation running in interactive window... Monitoring for completion and errors..."
             )
-            
+
             while elapsed_time < generation_timeout:
                 await sleep(check_interval)
                 elapsed_time += check_interval
-                
-                # Check if generation has produced output files
+
+                # Check if monitoring process has finished or has output
+                poll_result = monitoring_process.poll()
+                if poll_result is not None:
+                    # Process has finished, check the result
+                    stdout, stderr = monitoring_process.communicate()
+
+                    if poll_result == 0:
+                        # Success - break and continue with file checking
+                        print("Generation process completed successfully")
+                        break
+                    else:
+                        # Error occurred - send error details to Discord
+                        error_message = "❌ Generation failed with errors:\n"
+                        if stderr:
+                            # Limit error message length for Discord
+                            error_text = stderr.strip()
+                            if len(error_text) > 1500:
+                                error_text = error_text[:1500] + "...\n(truncated)"
+                            error_message += f"```\n{error_text}\n```"
+                        elif stdout:
+                            # Sometimes errors appear in stdout
+                            output_text = stdout.strip()
+                            if "error" in output_text.lower() or "exception" in output_text.lower():
+                                if len(output_text) > 1500:
+                                    output_text = output_text[:1500] + "...\n(truncated)"
+                                error_message += f"```\n{output_text}\n```"
+                            else:
+                                error_message += "Process exited with error code but no error details captured."
+                        else:
+                            error_message += "Process exited with error code but no error details captured."
+
+                        await interaction.edit_original_response(content=error_message)
+                        return
+
+                # Check if generation has produced output files (alternative success detection)
                 try:
                     output_files = listdir(self.output_directory)
                     zip_files = [f for f in output_files if f.endswith('.zip')]
-                    
+
                     if zip_files:
-                        # Generation completed successfully
+                        # Generation completed successfully - terminate monitoring process
+                        try:
+                            monitoring_process.terminate()
+                        except:
+                            pass
                         break
-                        
+
                     # Update progress every 60 seconds
                     if elapsed_time % 60 == 0:
                         minutes = elapsed_time // 60
                         await interaction.edit_original_response(
                             content=f"🔄 Generation running in interactive window... ({minutes}m elapsed)"
                         )
-                        
+
                 except Exception as e:
                     print(f"Error checking output files: {e}")
                     continue
-            
+
+            # Clean up monitoring process if still running
+            try:
+                if monitoring_process.poll() is None:
+                    monitoring_process.terminate()
+                    monitoring_process.wait(timeout=5)
+            except:
+                pass
+
+            # Clean up temporary directory
+            try:
+                shutil.rmtree(temp_dir)
+            except:
+                pass
+
             # Final check for output files
             try:
                 output_files = listdir(self.output_directory)
@@ -1079,15 +1140,15 @@ class ApCog(commands.GroupCog, group_name="ap"):
             except Exception as e:
                 print(f"Error in final file check: {e}")
                 zip_files = []
-            
+
             if not zip_files:
                 if elapsed_time >= generation_timeout:
                     await interaction.edit_original_response(
-                        content="❌ Generation timed out after 5 minutes. Check the generation window for details."
+                        content="❌ Generation timed out after 20 minutes. Check the generation window for details or look for error messages above."
                     )
                 else:
                     await interaction.edit_original_response(
-                        content="❌ Generation failed - no output file was created. Check the generation window for details."
+                        content="❌ Generation failed - no output file was created. Check the generation window for details or look for error messages above."
                     )
                 return
             
