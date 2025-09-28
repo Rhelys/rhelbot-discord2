@@ -831,7 +831,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
                               and delete the file initially saved
                 5: Add the slot name to the player list and return a success to the user 
     """
-
+    # Todo - Add validation for the player name prior to adding to the game_status file to ensure it will lint
     @app_commands.command(
         name="join",
         description="Adds your yaml config file to the pending Archipelago game",
@@ -974,8 +974,8 @@ class ApCog(commands.GroupCog, group_name="ap"):
     
     """
 
-    # Todo - Find out how to connect the bot to the server + channel for status messages
-    # https://github.com/LegendaryLinux/ArchipelaBot
+    # Todo - pull the server password from the host.yaml file instead of hardcoding it here
+
     @app_commands.command(
         name="start",
         description="Starts the game. Either generates or takes an optional "
