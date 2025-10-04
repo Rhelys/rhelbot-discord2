@@ -39,8 +39,8 @@ def resolve_hint_pattern(match, player_game: str, pattern_type: str, game_data: 
         location_id = int(match.group(2))
         
         # Look up names
-        item_name = lookup_item_func(player_game, item_id, game_data)
-        location_name = lookup_location_func(player_game, location_id, game_data)
+        item_name = lookup_item_func(player_game, item_id)
+        location_name = lookup_location_func(player_game, location_id)
         
         # Clean up names (remove "Item XXXX" or "Location XXXX" formats)
         if item_name and item_name != f"Item {item_id}" and "Item" not in item_name:
@@ -93,13 +93,13 @@ async def process_hint_response(hint_text: str, player_game: str, game_data: Dic
                         continue
                     
                     # Try as item ID first
-                    item_name = lookup_item_func(player_game, id_num, game_data)
+                    item_name = lookup_item_func(player_game, id_num)
                     if item_name and item_name != f"Item {id_num}" and "Item" not in item_name:
                         id_replacements[id_str] = item_name
                         continue
-                    
+
                     # Try as location ID
-                    location_name = lookup_location_func(player_game, id_num, game_data)
+                    location_name = lookup_location_func(player_game, id_num)
                     if location_name and location_name != f"Location {id_num}" and "Location" not in location_name:
                         id_replacements[id_str] = location_name
                         continue

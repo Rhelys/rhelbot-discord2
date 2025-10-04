@@ -1475,9 +1475,9 @@ class ApCog(commands.GroupCog, group_name="ap"):
     )
     @app_commands.describe(
         player="Optional: Show hints only for a specific player and their hint points/cost",
-        exclude_found="Optional: Exclude hints for items that have already been found (default: False)"
+        exclude_found="Optional: Exclude hints for items that have already been found (default: True)"
     )
-    async def ap_hints(self, interaction: discord.Interaction, player: Optional[str] = None, exclude_found: bool = False):
+    async def ap_hints(self, interaction: discord.Interaction, player: Optional[str] = None, exclude_found: bool = True):
         await interaction.response.defer()
         
         # Check if server is running first
