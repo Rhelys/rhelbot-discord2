@@ -1,24 +1,20 @@
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
+import os
 from os import remove, listdir, rename, path
 import subprocess
 import asyncio
 from asyncio import sleep
-import websockets
 import json
 import zipfile
 from typing import Optional, Dict
 from ruyaml import YAML
 import shutil
 from datetime import datetime
-import uuid
-import io
-import zlib
-import pickle
-from collections import namedtuple
 import re
 import time
+import psutil
 
 # Import all helper functions
 from helpers.data_helpers import *
@@ -26,6 +22,9 @@ from helpers.lookup_helpers import *
 from helpers.server_helpers import *
 from helpers.formatting_helpers import *
 from helpers.progress_helpers import *
+from helpers.message_processors import *
+from helpers.progress_display import *
+from helpers.websocket_managers import *
 
 donkeyServer = discord.Object(id=591625815528177690)
 
@@ -160,7 +159,6 @@ class ApCog(commands.GroupCog, group_name="ap"):
         Returns:
             dict: Dictionary mapping player names to their game names
         """
-        from helpers.data_helpers import load_game_status
         
         current_players = {}
         game_status = load_game_status("game_status.json")
@@ -180,210 +178,11 @@ class ApCog(commands.GroupCog, group_name="ap"):
             print(f"Could not find channel with ID {channel_id}")
             return
 
-        websocket = None
-        reconnect_attempts = 0
-        max_reconnect_attempts = 5
-        base_delay = 2  # Base delay in seconds
-        max_delay = 60  # Maximum delay in seconds
-        
-        while reconnect_attempts <= max_reconnect_attempts:
-            try:
-                if reconnect_attempts > 0:
-                    # Calculate exponential backoff delay
-                    delay = min(base_delay * (2 ** (reconnect_attempts - 1)), max_delay)
-                    await channel.send(f"⚠️ Connection lost to {server_url}, reconnecting in {delay} seconds... (attempt {reconnect_attempts}/{max_reconnect_attempts})")
-                    print(f"Waiting {delay} seconds before reconnect attempt {reconnect_attempts}")
-                    await asyncio.sleep(delay)
-                
-                print(f"Attempting to connect to {server_url} (attempt {reconnect_attempts + 1})")
-                
-                # Connect to the Archipelago websocket server with proper compression support
-                websocket = await asyncio.wait_for(
-                    websockets.connect(
-                        server_url, 
-                        ping_interval=20,  # Ping every 20 seconds
-                        ping_timeout=10,   # Wait 10 seconds for pong
-                        close_timeout=10,  # Wait 10 seconds for close
-                        max_size=None,     # No message size limit
-                        compression="deflate"  # Enable compression as expected by Archipelago
-                    ),
-                    timeout=15.0
-                )
-                
-                print(f"Successfully connected to {server_url}")
-                
-                # Update the connection tracking with the websocket
-                if server_url in self.active_connections:
-                    self.active_connections[server_url]["websocket"] = websocket
-                
-                # Send connection message - based on working bridgeipelago example
-                import uuid
-                connect_msg = {
-                    "cmd": "Connect",
-                    "game": "",
-                    "password": password,
-                    "name": "Rhelbot",
-                    "version": {"major": 0, "minor": 6, "build": 0, "class": "Version"},
-                    "tags": ["Tracker"],
-                    "items_handling": 0b000,  # No items handling for tracker
-                    "uuid": uuid.getnode()
-                }
-                await websocket.send(json.dumps([connect_msg]))
-                print("Sent connection message")
-                
-                # Reset reconnect attempts on successful connection and message exchange
-                connection_confirmed = False
-                connection_stable = False
-                stable_message_count = 0
-                
-                # Listen for messages indefinitely
-                try:
-                    while True:
-                        try:
-                            # Wait for message with longer timeout for initial connection
-                            timeout = 30.0 if not connection_confirmed else 120.0
-                            message = await asyncio.wait_for(websocket.recv(), timeout=timeout)
-                            
-                            try:
-                                data = json.loads(message)
-                                print(f"Received message: {data}")
-                                
-                                # Process different message types
-                                for msg in data:
-                                    msg_cmd = msg.get("cmd", "")
-                                    
-                                    # Handle connection confirmation
-                                    if msg_cmd == "Connected" and not connection_confirmed:
-                                        connection_confirmed = True
-                                        await channel.send(f"🔗 Successfully connected to Archipelago server: {server_url}")
-                                        
-                                        # Store connection data for player lookups
-                                        server_key = f"connection_{len(self.connection_data)}"
-                                        self.connection_data[server_key] = msg
-                                        print(f"Stored connection data: {msg.get('slot_info', {})}")
-                                        
-                                        # Request DataPackage but only for games that are actually being played
-                                        # This reduces the size compared to requesting all games
-                                        slot_info = msg.get("slot_info", {})
-                                        games_in_use = list(set(player_info.get("game", "") for player_info in slot_info.values()))
-                                        games_in_use = [game for game in games_in_use if game]  # Remove empty strings
-                                        
-                                        if games_in_use:
-                                            get_data_msg = {"cmd": "GetDataPackage", "games": games_in_use}
-                                            print(f"Requesting DataPackage for games: {games_in_use}")
-                                        else:
-                                            # Fallback to requesting all games if we can't determine which ones are in use
-                                            get_data_msg = {"cmd": "GetDataPackage"}
-                                            print("Requesting full DataPackage (couldn't determine games in use)")
-                                        
-                                        await websocket.send(json.dumps([get_data_msg]))
-                                        
-                                    # Handle connection rejection
-                                    elif msg_cmd == "ConnectionRefused":
-                                        reason = msg.get("errors", ["Unknown error"])
-                                        await channel.send(f"❌ Connection refused: {', '.join(reason)}")
-                                        return
-                                        
-                                    # Process all messages
-                                    try:
-                                        await self.process_ap_message(msg, channel)
-                                        
-                                        # Count stable messages to reset reconnect counter
-                                        if connection_confirmed:
-                                            stable_message_count += 1
-                                            if stable_message_count >= 5 and not connection_stable:
-                                                connection_stable = True
-                                                reconnect_attempts = 0  # Reset on stable connection
-                                                print(f"Connection to {server_url} is stable, reset reconnect counter")
-                                                
-                                    except Exception as msg_error:
-                                        print(f"Error processing individual message: {msg_error}")
-                                        # Continue processing other messages
-                                        continue
-                                        
-                            except json.JSONDecodeError as json_error:
-                                print(f"Failed to decode message: {message} - Error: {json_error}")
-                                continue
-                                
-                        except asyncio.TimeoutError:
-                            if not connection_confirmed:
-                                print("Connection timeout during initial handshake")
-                                raise websockets.exceptions.ConnectionClosed(None, None)
-                            else:
-                                print("No message received in 120 seconds, checking connection...")
-                                # Send a ping to check if connection is still alive
-                                try:
-                                    pong = await websocket.ping()
-                                    await asyncio.wait_for(pong, timeout=10.0)
-                                    print("Connection is still alive")
-                                    continue
-                                except Exception as ping_error:
-                                    print(f"Ping failed: {ping_error}")
-                                    raise websockets.exceptions.ConnectionClosed(None, None)
-                                
-                        except websockets.exceptions.ConnectionClosed as conn_closed:
-                            print(f"Websocket connection closed: {conn_closed}")
-                            raise conn_closed
-                            
-                        except Exception as loop_error:
-                            print(f"Unexpected error in message loop: {loop_error}")
-                            # For unexpected errors, try to continue but increment reconnect counter
-                            if not connection_stable:
-                                raise loop_error
-                            continue
-                            
-                except (websockets.exceptions.ConnectionClosed, Exception) as conn_error:
-                    print(f"Connection error: {conn_error}")
-                    
-                    # If we haven't established a stable connection, increment reconnect attempts
-                    if not connection_stable:
-                        reconnect_attempts += 1
-                    else:
-                        # If connection was stable, reset counter and try again
-                        reconnect_attempts = 1
-                        connection_stable = False
-                    
-                    if reconnect_attempts <= max_reconnect_attempts:
-                        continue  # Try to reconnect
-                    else:
-                        await channel.send(f"❌ Connection to {server_url} failed after {max_reconnect_attempts} attempts")
-                        break
-                        
-            except asyncio.TimeoutError:
-                print(f"Connection timeout to {server_url}")
-                reconnect_attempts += 1
-                if reconnect_attempts <= max_reconnect_attempts:
-                    continue
-                else:
-                    await channel.send(f"❌ Connection timeout to {server_url} after {max_reconnect_attempts} attempts")
-                    break
-                    
-            except websockets.exceptions.InvalidURI:
-                await channel.send(f"❌ Invalid server URL: {server_url}")
-                break
-                
-            except Exception as connect_error:
-                print(f"Error connecting to {server_url}: {connect_error}")
-                reconnect_attempts += 1
-                if reconnect_attempts <= max_reconnect_attempts:
-                    continue
-                else:
-                    await channel.send(f"❌ Error connecting to {server_url}: {str(connect_error)}")
-                    break
-                    
-            finally:
-                # Clean up websocket connection for this attempt
-                if websocket:
-                    try:
-                        await websocket.close()
-                    except Exception as close_error:
-                        print(f"Error closing websocket: {close_error}")
-                    websocket = None
-        
-        # Final cleanup
-        print(f"Websocket listener for {server_url} is exiting")
-        if server_url in self.active_connections:
-            del self.active_connections[server_url]
+        # Delegate to the main websocket listener loop
+        await websocket_listener_main_loop(
+            server_url, channel, password, self.active_connections,
+            self.connection_data, self.process_ap_message
+        )
 
     def lookup_item_name(self, game: str, item_id: int) -> str:
         """
@@ -420,230 +219,65 @@ class ApCog(commands.GroupCog, group_name="ap"):
     async def process_ap_message(self, msg: dict, channel):
         """Process and format Archipelago messages for Discord"""
         cmd = msg.get("cmd", "")
-        
+
         # Debug: Print all received messages to console for troubleshooting
         print(f"AP Message received: {cmd} - {msg}")
-        
+
         if cmd == "Connected":
-            # Store connection data for player lookups - use a simpler approach
-            # Since we might have multiple servers, store all connection data
-            server_key = f"connection_{len(self.connection_data)}"  # Simple key generation
-            self.connection_data[server_key] = msg
-            print(f"Stored connection data: {msg.get('slot_info', {})}")
-            
-            players = msg.get("slot_info", {})
-            if players:
-                player_list = ", ".join([f"{info['name']} ({info['game']})" for info in players.values()])
-                await channel.send(f"🎮 **Game Connected**\nPlayers: {player_list}")
-            else:
-                await channel.send(f"🎮 **Connected to Archipelago server**")
-            
+            await process_connected_message(msg, channel, self.connection_data)
+
         elif cmd == "ConnectionRefused":
-            errors = msg.get("errors", ["Unknown error"])
-            await channel.send(f"❌ **Connection Refused**: {', '.join(errors)}")
-            
+            await process_connection_refused_message(msg, channel)
+
         elif cmd == "ReceivedItems":
-            items = msg.get("items", [])
-            for item in items:
-                item_name = item.get("item", "Unknown Item")
-                player_name = item.get("player", "Unknown Player")
-                await channel.send(f"📦 **{player_name}** received: {item_name}")
-                
+            await process_received_items_message(msg, channel)
+
         elif cmd == "LocationInfo":
-            locations = msg.get("locations", [])
-            for location in locations:
-                location_name = location.get("location", "Unknown Location")
-                player_name = location.get("player", "Unknown Player")
-                await channel.send(f"📍 **{player_name}** checked: {location_name}")
-                
+            await process_location_info_message(msg, channel)
+
         elif cmd == "PrintJSON":
             # Handle chat messages and game events
             msg_type = msg.get("type", "")
             data = msg.get("data", [])
-            
+
             # Skip chat messages from players
             if msg_type == "Chat":
                 print(f"Skipping chat message: {data}")
                 return
-                
+
             elif msg_type == "ItemSend":
-                # Parse the complex item send message structure
-                try:
-                    # Extract components from the data array
-                    sender_id = None
-                    recipient_id = None
-                    item_id = None
-                    item_flags = None
-                    location_id = None
-                    
-                    for item in data:
-                        if item.get("type") == "player_id":
-                            if sender_id is None:
-                                sender_id = item.get("text")
-                            else:
-                                recipient_id = item.get("text")
-                        elif item.get("type") == "item_id":
-                            item_id = item.get("text")
-                            item_flags = item.get("flags", 0)
-                        elif item.get("type") == "location_id":
-                            location_id = item.get("text")
-                    
-                    # Track location check for progress tracking
-                    if sender_id and location_id:
-                        sender_id_int = int(sender_id)
-                        location_id_int = int(location_id)
-                        
-                        # Initialize player progress if not exists
-                        if sender_id_int not in self.player_progress:
-                            self.player_progress[sender_id_int] = set()
-                        
-                        # Add this location to the player's checked locations
-                        self.player_progress[sender_id_int].add(location_id_int)
-                        print(f"Tracked location check: Player {sender_id_int} checked location {location_id_int}")
-                    
-                    # Only send messages for progression items (key items)
-                    # Check both item_flags == 1 and item_flags & 1 (bitwise check for progression flag)
-                    is_progression = (item_flags == 1) or (item_flags is not None and (item_flags & 1) != 0)
-                    
-                    if is_progression and sender_id and recipient_id and item_id and location_id:
-                        # Debug logging
-                        print(f"Processing key ItemSend: sender_id={sender_id}, recipient_id={recipient_id}, item_id={item_id}, item_flags={item_flags}, location_id={location_id}")
-                        
-                        # Look up actual names using the stored data
-                        sender_name = self.lookup_player_name(int(sender_id))
-                        recipient_name = self.lookup_player_name(int(recipient_id))
-                        
-                        # Skip if either player is the Rhelbot tracker
-                        if sender_name.lower() == "rhelbot" or recipient_name.lower() == "rhelbot":
-                            print(f"Skipping ItemSend involving Rhelbot tracker")
-                            return
-                        
-                        # Check if the recipient player has completed 100% of their locations
-                        recipient_id_int = int(recipient_id)
-                        
-                        # Only perform the completion check if we have save data loaded
-                        # Try to load save data if needed
-                        save_data = load_apsave_data(self.output_directory, self.AP_DIR)
-                        if save_data and self.is_player_completed(recipient_id_int, save_data):
-                            print(f"Skipping ItemSend to player {recipient_name} who has completed 100% of locations")
-                            return
-                            
-                        # Get the recipient's game to look up item and location names
-                        recipient_game = self.lookup_player_game(int(recipient_id))
-                        sender_game = self.lookup_player_game(int(sender_id))
-                        
-                        # Use recipient's game for item lookup, sender's game for location lookup
-                        item_name = self.lookup_item_name(recipient_game, int(item_id))
-                        location_name = self.lookup_location_name(sender_game, int(location_id))
-                        
-                        # Key item emoji
-                        item_emoji = "🔑"
-                        
-                        message = f"{item_emoji} **{sender_name}** sent **{item_name}** to **{recipient_name}**\n📍 From: {location_name}"
-                        await channel.send(message)
-                    else:
-                        # Skip non-key items
-                        if item_flags is not None:
-                            print(f"Skipping non-key ItemSend (flags={item_flags}) from player {sender_id} to player {recipient_id}")
-                        
-                except Exception as e:
-                    print(f"Error parsing ItemSend message: {e}")
-                    
+                await process_item_send_message(
+                    data, channel, self.player_progress, self.output_directory, self.AP_DIR,
+                    self.lookup_player_name, self.lookup_player_game,
+                    self.lookup_item_name, self.lookup_location_name, self.is_player_completed
+                )
+
             elif msg_type in ["ItemReceive"]:
                 # Skip item receive messages from players
                 print(f"Skipping ItemReceive message: {data}")
                 return
-                    
+
             elif msg_type in ["Goal", "Release", "Collect", "Countdown"]:
-                # Keep important game events but not player-specific ones
-                text = "".join([item.get("text", "") for item in data])
-                if text:
-                    await channel.send(f"🎯 {text}")
-                    
+                await process_game_event_message(msg_type, data, channel)
+
             elif msg_type in ["Tutorial", "ServerChat"]:
-                # Keep server messages and tutorials but filter out join/leave messages
-                text = "".join([item.get("text", "") for item in data])
-                if text:
-                    # Skip join/leave info messages with comprehensive filtering
-                    text_lower = text.lower()
-                    join_leave_keywords = [
-                        "has joined", "has left", "joined the game", "left the game",
-                        "tracking", "client(", "tags:", "connected", "disconnected",
-                        "now tracking", "no longer tracking", "syncing", "sync complete",
-                        "slot data", "connecting", "connection established", "room join",
-                        "player slot", "team #"
-                    ]
-                    
-                    if any(keyword in text_lower for keyword in join_leave_keywords):
-                        print(f"Skipping join/leave message: {text}")
-                        return
-                    
-                    await channel.send(f"ℹ️ {text}")
-                    
+                await process_server_message(msg_type, data, channel)
+
             else:
-                # For other message types, check if they're player-related or join/leave before sending
-                text = "".join([item.get("text", "") for item in data])
-                if text:
-                    # Skip messages that appear to be player-related or join/leave messages
-                    text_lower = text.lower()
-                    filter_keywords = [
-                        "player", "sent", "received", "found", "checked", 
-                        "has joined", "has left", "joined the game", "left the game",
-                        "tracking", "client(", "connected", "disconnected",
-                        "now tracking", "no longer tracking", "syncing", "sync complete",
-                        "slot data", "connecting", "connection established", "room join",
-                        "player slot", "team #", "tags:", "collecting", "collected"
-                    ]
-                    
-                    if any(keyword in text_lower for keyword in filter_keywords):
-                        print(f"Skipping filtered message: {text}")
-                        return
-                    
-                    await channel.send(f"ℹ️ {text}")
-                
+                await process_filtered_message(data, channel)
+
         elif cmd == "RoomUpdate":
-            # Handle room/game state updates
-            if "players" in msg:
-                players = msg["players"]
-                online_players = [p["alias"] for p in players if p.get("status", 0) > 0]
-                if online_players:
-                    await channel.send(f"👥 **Online players**: {', '.join(online_players)}")
-                    
+            await process_room_update_message(msg, channel)
+
         elif cmd == "RoomInfo":
-            # Handle room information
-            room_info = []
-            if "seed_name" in msg:
-                room_info.append(f"**Seed**: {msg['seed_name']}")
-            if "players" in msg:
-                player_count = len(msg["players"])
-                room_info.append(f"**Players**: {player_count}")
-            if room_info:
-                await channel.send(f"🏠 **Room Info**\n" + "\n".join(room_info))
-                
+            await process_room_info_message(msg, channel)
+
         elif cmd == "DataPackage":
-            # Handle data package (game information) and store it for lookups
-            print(f"Received DataPackage: {msg}")
-            games = msg.get("data", {}).get("games", {})
-            if games:
-                # Store the game data for lookups
-                self.game_data = games
-                print(f"Stored game data for {len(games)} games: {list(games.keys())}")
-                
-                # Debug: Show what data we have for each game
-                for game_name, game_info in games.items():
-                    item_count = len(game_info.get("item_name_to_id", {}))
-                    location_count = len(game_info.get("location_name_to_id", {}))
-                    print(f"Game '{game_name}': {item_count} items, {location_count} locations")
-                
-                game_list = list(games.keys())
-                await channel.send(f"🎲 **Available games**: {', '.join(game_list[:10])}" + 
-                                ("..." if len(game_list) > 10 else ""))
-            else:
-                print("DataPackage received but no games data found")
-        
+            await process_data_package_message(msg, channel, self.game_data)
+
         # Handle any other message types by showing the command type
-        elif cmd and cmd not in ["Bounced"]:  # Bounced messages are just echoes, ignore them
-            await channel.send(f"📨 **{cmd}**: {str(msg)[:200]}{'...' if len(str(msg)) > 200 else ''}")
+        else:
+            await process_unknown_message(cmd, msg, channel)
 
     @app_commands.command(
         name="track",
@@ -666,7 +300,6 @@ class ApCog(commands.GroupCog, group_name="ap"):
         if not server_url:
             server_url = "ws://ap.rhelys.com:38281"  # Default server URL
             try:
-                from helpers.server_helpers import get_server_password
                 password = get_server_password()  # Read password from file
             except Exception as e:
                 await interaction.followup.send(f"❌ Server password error: {str(e)}")
@@ -700,7 +333,6 @@ class ApCog(commands.GroupCog, group_name="ap"):
             return
         
         # Check if we already have a datapackage available
-        from helpers.data_helpers import is_datapackage_available, fetch_and_save_datapackage
         have_datapackage = is_datapackage_available()
         
         # If not, fetch and save it for faster lookups during tracking
@@ -997,7 +629,6 @@ class ApCog(commands.GroupCog, group_name="ap"):
             remove(f"{self.output_directory}/{file}")
             
         # Delete any existing datapackage to ensure clean start
-        from helpers.data_helpers import delete_local_datapackage
         delete_local_datapackage()
         logger.info("Deleted local datapackage before server start")
 
@@ -1027,7 +658,6 @@ class ApCog(commands.GroupCog, group_name="ap"):
                 return
             
             # Start the generation process in an interactive window so user can watch progress
-            import time
             start_time = time.time()
             
             # Run the generation in a new interactive command window
@@ -1121,15 +751,12 @@ class ApCog(commands.GroupCog, group_name="ap"):
 
         # Keep the server started message simple to avoid character limit issues
         try:
-            from helpers.server_helpers import get_server_password
             server_password = get_server_password()
             server_message = f"Archipelago server started.\nServer: ap.rhelys.com\nPort: 38281\nPassword: {server_password}"
             await interaction.edit_original_response(content=server_message)
             
             # After server is started, fetch and save the datapackage
             try:
-                from helpers.data_helpers import fetch_and_save_datapackage
-                import asyncio
                 
                 # Give the server a moment to fully initialize
                 await asyncio.sleep(5)
@@ -1210,7 +837,6 @@ class ApCog(commands.GroupCog, group_name="ap"):
         killed_processes = []
         
         try:
-            import psutil
             
             # Find and kill the MultiServer.py process
             for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
@@ -1288,7 +914,6 @@ class ApCog(commands.GroupCog, group_name="ap"):
         server_pid = None
         
         try:
-            import psutil
             
             # Check for MultiServer.py processes
             for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
@@ -1434,8 +1059,6 @@ class ApCog(commands.GroupCog, group_name="ap"):
         await interaction.response.defer()
         
         try:
-            import psutil
-            import os
             
             # Find and kill the MultiServer.py process
             killed_processes = []
@@ -1469,7 +1092,6 @@ class ApCog(commands.GroupCog, group_name="ap"):
             if killed_processes:
                 # Delete the local datapackage when server is stopped
                 try:
-                    from helpers.data_helpers import delete_local_datapackage
                     delete_success = delete_local_datapackage()
                     datapackage_message = "\nDatapackage cleaned up successfully." if delete_success else ""
                     logger.info(f"Deleted datapackage on server stop: {delete_success}")
@@ -1518,7 +1140,6 @@ class ApCog(commands.GroupCog, group_name="ap"):
         
         # Stop any running server first
         try:
-            import psutil
             
             # Find and kill the MultiServer.py process
             killed_processes = []
@@ -1570,16 +1191,13 @@ class ApCog(commands.GroupCog, group_name="ap"):
             await sleep(8)  # Give server time to start
             
             try:
-                from helpers.server_helpers import get_server_password
                 server_password = get_server_password()
                 restart_message = "✅ Archipelago server restarted successfully!\n" \
                                  f"Server: ap.rhelys.com\nPort: 38281\nPassword: {server_password}"
                 
                 # After server is restarted, fetch and save a fresh datapackage
                 try:
-                    from helpers.data_helpers import fetch_and_save_datapackage
-                    import asyncio
-                    
+                            
                     # Give the server a moment to fully initialize
                     await asyncio.sleep(5)
                     
@@ -1614,11 +1232,9 @@ class ApCog(commands.GroupCog, group_name="ap"):
     @app_commands.describe(player="Optional: Show progress for a specific player or use 'me' for your own progress")
     async def ap_progress(self, interaction: discord.Interaction, player: Optional[str] = None):
         await interaction.response.defer()
-        
-        # Check if server is running first
-        server_running = self.is_server_running()
 
-        if not server_running:
+        # Check if server is running first
+        if not self.is_server_running():
             await interaction.followup.send("❌ Archipelago server is not running. Use `/ap start` to start the server first.")
             return
 
@@ -1632,298 +1248,99 @@ class ApCog(commands.GroupCog, group_name="ap"):
                 await interaction.followup.send("❌ You haven't joined the game yet. Use `/ap join` first.")
                 return
             elif isinstance(resolved_player, list):
-                # If multiple players are found, show all of them
                 target_players = resolved_player
                 await interaction.followup.send(f"ℹ️ Showing progress for all your players: {', '.join(resolved_player)}")
             else:
                 target_players = [resolved_player]
 
-        # Check if we have active connection data that indicates a current game is running
+        # Check if we have active connection data
         has_active_connection = bool(self.connection_data and self.game_data and self.player_progress)
 
-        # Load save data, but we'll validate it against the active connection if available
+        # Load save data
         save_data = load_apsave_data(self.output_directory, self.ap_directory)
         if not save_data:
             await interaction.followup.send("❌ Could not load save data. Make sure the Archipelago server has a save file.")
             return
 
-        # If we have an active connection but the save file might be from a different game,
-        # warn the user and prioritize live tracking data over save file location data
-        if has_active_connection:
-            print("Using live tracking data from active WebSocket connection, supplemented by save file structure")
-        else:
-            print("Using save file data - no active connection detected")
-            # When there's no active tracking, we can't be sure the save file is from the current game
-            # Try to validate by checking if the save file is recent relative to server start
-            from pathlib import Path
-            import time
+        # Validate save file timestamp if no active connection
+        if not validate_save_file_timestamp(self.output_directory, self.connection_data, self.game_data, self.player_progress):
+            await interaction.edit_original_response(
+                content="⚠️ **Warning**: Save file data may be from a previous game session.\n\n"
+            )
 
-            output_path = Path(self.output_directory)
-            apsave_files = list(output_path.glob("*.apsave"))
+        # Load and validate game data
+        all_players, game_data = await load_and_validate_game_data(
+            interaction, self.connection_data, self.game_data, save_data,
+            self.fetch_server_data, self.extract_player_data_from_save
+        )
 
-            if apsave_files:
-                most_recent_save = max(apsave_files, key=lambda f: f.stat().st_mtime)
-                save_age_minutes = (time.time() - most_recent_save.stat().st_mtime) / 60
-
-                # If the save file is more than 30 minutes old, warn the user
-                if save_age_minutes > 30:
-                    await interaction.edit_original_response(
-                        content=f"⚠️ **Warning**: Using save file data that is {save_age_minutes:.0f} minutes old. "
-                        f"This may not reflect the current game session.\n\n"
-                    )
-        
-        # Set flag for specific player filtering
-        show_specific_players = (target_players is not None)
-        
-        # Get player and game data from save file or connection data
-        all_players = {}
-        game_data = {}
-        
-        # First try to get data from active websocket connection
-        if self.connection_data and self.game_data:
-            for server_key, conn_data in self.connection_data.items():
-                slot_info = conn_data.get("slot_info", {})
-                for slot_id, player_info in slot_info.items():
-                    player_id = int(slot_id)
-                    all_players[player_id] = {
-                        "name": player_info.get("name", f"Player {player_id}"),
-                        "game": player_info.get("game", "Unknown")
-                    }
-            game_data = self.game_data
-        else:
-            # If no websocket connection, connect to server to get current game data and validate against save file
-            await interaction.edit_original_response(content="📡 Connecting to server to get current game data...")
-
-            server_data = await self.fetch_server_data()
-            if server_data:
-                all_players = server_data["players"]
-                game_data = server_data["game_data"]
-
-                # Validate that current server players match save file players
-                save_players = set()
-                for (team, slot), locations in save_data.get("location_checks", {}).items():
-                    if team == 0:  # Assuming team 0
-                        save_players.add(slot)
-
-                current_players = set(all_players.keys())
-
-                # If players don't match, warn about potential mismatch
-                if save_players and current_players and not save_players.intersection(current_players):
-                    await interaction.edit_original_response(
-                        content="⚠️ **Warning**: Save file players don't match current server players. "
-                        f"This save file appears to be from a different game session.\n\n"
-                    )
-
-                # Store temporarily for the location counting function to use
-                self._temp_player_data = all_players
-                self._temp_game_data = game_data
-            else:
-                # Fallback: try to extract basic data from save file
-                all_players, game_data = self.extract_player_data_from_save(save_data)
-        
         if not all_players:
             await interaction.followup.send("❌ No players found in the current game.")
             return
-        
+
+        # Set up progress tracking
+        show_specific_players = (target_players is not None)
+        location_checks = save_data.get("location_checks", {})
+
+        # Check for save file mismatch and merge real-time data
+        await check_save_file_mismatch(interaction, has_active_connection, all_players, location_checks)
+        location_checks = merge_real_time_tracking_data(location_checks, self.player_progress)
+
+        # Parse activity timers
+        activity_timer_dict = parse_activity_timers(save_data.get("client_activity_timers", ()))
+
+        # Generate player progress data
+        player_progress_data = get_player_progress_data(
+            all_players, location_checks, activity_timer_dict, target_players,
+            show_specific_players, lambda pid: get_player_total_locations(pid, save_data),
+            self.create_progress_bar
+        )
+
+        # Handle case where specific players not found
+        if show_specific_players and not player_progress_data:
+            error_message = format_progress_error_message(original_player, target_players, all_players)
+            await interaction.followup.send(error_message)
+            return
+
+        # Sort and format progress data
+        player_progress_data.sort(key=lambda x: x[0])
         progress_lines = []
 
-        # Add data source indicator to help users understand reliability
+        # Add header
         if has_active_connection:
             progress_lines.append("📊 **Player Progress Report** (Live Tracking)\n")
         else:
             progress_lines.append("📊 **Player Progress Report** (Save File Data)\n")
-        
-        # Get location checks from save data
-        location_checks = save_data.get("location_checks", {})
 
-        # Check for potential save file mismatch if we have active connection data
-        if has_active_connection and all_players:
-            # Check if the players in the connection match those in the save file
-            save_players = set()
-            for (team, slot), locations in location_checks.items():
-                if team == 0:  # Assuming team 0
-                    save_players.add(slot)
-
-            connection_players = set(all_players.keys())
-
-            # If there's a significant mismatch, warn that data might be from different games
-            if save_players and not save_players.intersection(connection_players):
-                await interaction.edit_original_response(
-                    content="⚠️ **Warning**: Save file appears to be from a different game session than currently running. Showing live tracking data where available.\n\n"
-                )
-
-        # Merge with real-time tracking data for most up-to-date information
-        # This ensures we show the latest location checks even if the save file hasn't been updated yet
-        for player_id, real_time_locations in self.player_progress.items():
-            # Get the current save data for this player
-            save_locations = location_checks.get((0, player_id), set())
-
-            # Merge real-time data with save data (union of both sets)
-            merged_locations = save_locations.union(real_time_locations)
-            location_checks[(0, player_id)] = merged_locations
-        
-        # Get client activity timers from save data
-        client_activity_timers = save_data.get("client_activity_timers", ())
-        
-        # Convert client_activity_timers to a dictionary for easier lookup
-        activity_timer_dict = {}
-        if isinstance(client_activity_timers, (list, tuple)):
-            for entry in client_activity_timers:
-                if isinstance(entry, (list, tuple)) and len(entry) >= 2:
-                    player_key, timestamp = entry[0], entry[1]
-                    if isinstance(player_key, (list, tuple)) and len(player_key) >= 2:
-                        team, slot = player_key[0], player_key[1]
-                        activity_timer_dict[(team, slot)] = timestamp
-        
-        # Filter out "Rhelbot" and create a list for sorting
-        player_progress_data = []
-        
-        for player_id, player_info in all_players.items():
-            player_name = player_info["name"]
-            player_game = player_info["game"]
-            
-            # Skip the Rhelbot tracker
-            if player_name.lower() == "rhelbot":
-                continue
-                
-            # Filter for specific players if requested
-            if show_specific_players and player_name not in target_players:
-                continue
-            
-            # Get checked locations for this player from save data
-            # location_checks format: {(team, slot): set of location_ids}
-            checked_locations = location_checks.get((0, player_id), set())  # Assuming team 0
-            checked_count = len(checked_locations)
-            
-            # Get total locations for this player from the actual multiworld data
-            total_locations = get_player_total_locations(player_id, save_data)
-            
-            # Calculate percentage
-            if total_locations > 0:
-                percentage = (checked_count / total_locations) * 100
-                is_complete = percentage >= 100.0
-                
-                # Add checkmark for 100% completion after the game name
-                completion_indicator = " ✅" if is_complete else ""
-                
-                # Get last activity timestamp for this player
-                last_activity_timestamp = activity_timer_dict.get((0, player_id))  # Assuming team 0
-                timestamp_line = ""
-                if last_activity_timestamp:
-                    # Convert to Unix timestamp and format for Discord
-                    unix_timestamp = int(last_activity_timestamp)
-                    timestamp_line = f"\n└ Last check time: <t:{unix_timestamp}:R>"
-                
-                progress_bar = self.create_progress_bar(percentage)
-                player_line = (
-                    f"**{player_name}** ({player_game}){completion_indicator}\n"
-                    f"└ {checked_count}/{total_locations} locations ({percentage:.1f}%)\n"
-                    f"└ {progress_bar}{timestamp_line}\n"
-                )
-            else:
-                # Get last activity timestamp for this player
-                last_activity_timestamp = activity_timer_dict.get((0, player_id))  # Assuming team 0
-                timestamp_line = ""
-                if last_activity_timestamp:
-                    # Convert to Unix timestamp and format for Discord
-                    unix_timestamp = int(last_activity_timestamp)
-                    timestamp_line = f"\n└ Last check time: <t:{unix_timestamp}:R>"
-                
-                player_line = (
-                    f"**{player_name}** ({player_game})\n"
-                    f"└ {checked_count}/? locations (No location data available){timestamp_line}\n"
-                )
-            
-            # Store for sorting
-            player_progress_data.append((player_name.lower(), player_line))
-        
-        # If specific players were requested but none found, show an error message
-        if show_specific_players and not any(p for p in player_progress_data):
-            # List available players for reference
-            available_players = [info["name"] for info in all_players.values() 
-                               if info["name"].lower() != "rhelbot"]
-            
-            # Customize error message based on the original input
-            if original_player and original_player.lower() == "me":
-                await interaction.followup.send(
-                    f"❌ You don't have any players in this game.\n"
-                    f"Available players: {', '.join(available_players)}"
-                )
-            elif original_player and (original_player.startswith('@') or original_player.startswith('<@')):
-                await interaction.followup.send(
-                    f"❌ The mentioned Discord user doesn't have any players in this game.\n"
-                    f"Available players: {', '.join(available_players)}"
-                )
-            else:
-                player_name = target_players[0] if target_players else original_player
-                await interaction.followup.send(
-                    f"❌ Player '{player_name}' not found.\n"
-                    f"Available players: {', '.join(available_players)}"
-                )
-            return
-            
-        # Sort alphabetically by player name
-        player_progress_data.sort(key=lambda x: x[0])
-        
-        # Add sorted progress lines
+        # Add player progress lines
         for _, player_line in player_progress_data:
             progress_lines.append(player_line)
-        
-        # Calculate total game progress
-        total_checked = 0
-        total_locations = 0
-        
-        for player_id, player_info in all_players.items():
-            player_name = player_info["name"]
-            
-            # Skip the Rhelbot tracker
-            if player_name.lower() == "rhelbot":
-                continue
-            
-            # Get checked locations for this player
-            checked_locations = location_checks.get((0, player_id), set())
-            checked_count = len(checked_locations)
-            
-            # Get total locations for this player
-            player_total_locations = get_player_total_locations(player_id, save_data)
-            
-            total_checked += checked_count
-            total_locations += player_total_locations
-        
-        # Add total progress section
-        if total_locations > 0:
-            total_percentage = (total_checked / total_locations) * 100
-            total_progress_bar = self.create_progress_bar(total_percentage)
-            
-            progress_lines.append("─" * 40)  # Separator line
-            progress_lines.append("\n📈 **Total Game Progress**")
-            progress_lines.append(f"\n└ {total_checked}/{total_locations} locations ({total_percentage:.1f}%)")
-            progress_lines.append(f"└ {total_progress_bar}")
-        
-        # Send the progress report
+
+        # Calculate and add total progress if not showing specific players
+        if not target_players:
+            total_checked, total_locations, overall_percentage = calculate_total_game_progress(
+                all_players, location_checks, lambda pid: get_player_total_locations(pid, save_data)
+            )
+
+            if total_locations > 0:
+                total_progress_bar = self.create_progress_bar(overall_percentage)
+                progress_lines.extend([
+                    "─" * 40,
+                    "\n📈 **Total Game Progress**",
+                    f"\n└ {total_checked}/{total_locations} locations ({overall_percentage:.1f}%)",
+                    f"└ {total_progress_bar}"
+                ])
+
+        # Send progress report in chunks if needed
         progress_message = "\n".join(progress_lines)
-        
-        # Split message if it's too long for Discord
         if len(progress_message) > 2000:
-            # Send in chunks
-            chunks = []
-            current_chunk = "📊 **Player Progress Report**\n\n"
-            
-            for line in progress_lines[1:]:  # Skip the header since we added it to current_chunk
-                if len(current_chunk + line) > 1900:  # Leave some buffer
-                    chunks.append(current_chunk)
-                    current_chunk = line
-                else:
-                    current_chunk += line
-            
-            if current_chunk:
-                chunks.append(current_chunk)
-            
+            chunks = create_progress_sections(progress_lines[1:])  # Skip header
             for i, chunk in enumerate(chunks):
+                content = "📊 **Player Progress Report**\n\n" + chunk if i == 0 else chunk
                 if i == 0:
-                    await interaction.followup.send(chunk)
+                    await interaction.followup.send(content)
                 else:
-                    await interaction.channel.send(chunk)
+                    await interaction.channel.send(content)
         else:
             await interaction.followup.send(progress_message)
     
@@ -1947,7 +1364,6 @@ class ApCog(commands.GroupCog, group_name="ap"):
         Check if the Archipelago server is currently running
         (Delegating to helpers.server_helpers.is_server_running)
         """
-        from helpers.server_helpers import is_server_running
         return is_server_running(self.server_process)
     
     def extract_player_data_from_save(self, save_data):
@@ -1983,7 +1399,6 @@ class ApCog(commands.GroupCog, group_name="ap"):
         Create a standard Archipelago connection message
         (Delegating to helpers.server_helpers.create_connection_message)
         """
-        from helpers.server_helpers import create_connection_message
         return create_connection_message(password)
 
     async def _connect_to_server(self, server_url: str, timeout: float = 15.0):
@@ -1991,7 +1406,6 @@ class ApCog(commands.GroupCog, group_name="ap"):
         Create a websocket connection to the Archipelago server
         (Delegating to helpers.server_helpers.connect_to_server)
         """
-        from helpers.server_helpers import connect_to_server
         return await connect_to_server(server_url, timeout)
 
     async def fetch_server_data(self, server_url: str = "ws://ap.rhelys.com:38281", password: str = None, save_datapackage: bool = False):
@@ -2008,7 +1422,6 @@ class ApCog(commands.GroupCog, group_name="ap"):
         Returns:
             Dictionary containing players and game_data, or None on failure
         """
-        from helpers.server_helpers import fetch_server_data
         return await fetch_server_data(server_url, password, save_datapackage)
     
     
@@ -2019,7 +1432,6 @@ class ApCog(commands.GroupCog, group_name="ap"):
         Create a visual progress bar
         (Delegating to helpers.formatting_helpers.create_progress_bar)
         """
-        from helpers.formatting_helpers import create_progress_bar
         return create_progress_bar(percentage, length)
     
     def get_player_hint_points(self, player_id: int, save_data: dict) -> int:
@@ -2027,7 +1439,6 @@ class ApCog(commands.GroupCog, group_name="ap"):
         Get the current hint points for a specific player
         (Delegating to helpers.progress_helpers.get_player_hint_points)
         """
-        from helpers.progress_helpers import get_player_hint_points
         return get_player_hint_points(player_id, save_data, get_player_total_locations)
     
     def get_hint_cost(self, player_id: int, save_data: dict) -> int:
@@ -2035,7 +1446,6 @@ class ApCog(commands.GroupCog, group_name="ap"):
         Get the cost of the next hint for a specific player
         (Delegating to helpers.progress_helpers.get_hint_cost)
         """
-        from helpers.progress_helpers import get_hint_cost
         return get_hint_cost(player_id, save_data, get_player_total_locations)
         
     def is_player_completed(self, player_id: int, save_data: dict) -> bool:
