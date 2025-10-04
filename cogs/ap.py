@@ -1474,9 +1474,10 @@ class ApCog(commands.GroupCog, group_name="ap"):
         description="Shows all current hints for key items, grouped by finding player",
     )
     @app_commands.describe(
-        player="Optional: Show hints only for a specific player and their hint points/cost"
+        player="Optional: Show hints only for a specific player and their hint points/cost",
+        exclude_found="Optional: Exclude hints for items that have already been found (default: False)"
     )
-    async def ap_hints(self, interaction: discord.Interaction, player: Optional[str] = None):
+    async def ap_hints(self, interaction: discord.Interaction, player: Optional[str] = None, exclude_found: bool = False):
         await interaction.response.defer()
         
         # Check if server is running first
@@ -1568,6 +1569,9 @@ class ApCog(commands.GroupCog, group_name="ap"):
         for hint in all_hints:
             # Check if this is a Hint object with item_flags = 1 (progression items)
             if hasattr(hint, 'item_flags') and hint.item_flags == 1:
+                # Apply exclude_found filter if requested
+                if exclude_found and hasattr(hint, 'found') and hint.found:
+                    continue  # Skip found hints when exclude_found is True
                 # For now, include all key item hints since status filtering isn't working properly
                 # TODO: Fix status parsing to properly filter by priority/found status
                 key_item_hints.append(hint)
@@ -1589,6 +1593,9 @@ class ApCog(commands.GroupCog, group_name="ap"):
                             self.status = data[7] if len(data) > 7 else 0
                     
                     simple_hint = SimpleHint(hint)
+                    # Apply exclude_found filter if requested
+                    if exclude_found and simple_hint.found:
+                        continue  # Skip found hints when exclude_found is True
                     # Include all key item hints for now
                     key_item_hints.append(simple_hint)
                         
@@ -1606,6 +1613,9 @@ class ApCog(commands.GroupCog, group_name="ap"):
                         self.status = data.get('status', 0)
                 
                 simple_hint = SimpleHint(hint)
+                # Apply exclude_found filter if requested
+                if exclude_found and simple_hint.found:
+                    continue  # Skip found hints when exclude_found is True
                 # Include all key item hints for now
                 key_item_hints.append(simple_hint)
         
