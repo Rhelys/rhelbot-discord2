@@ -7,10 +7,12 @@ import pickle
 import zlib
 import logging
 import os
-import shutil
+import sys
+import io
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, Optional, Tuple, List
+from collections import namedtuple
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +50,6 @@ def save_game_status(game_status: Dict[str, Any], status_file: str = "game_statu
 
 def load_apsave_data(output_directory: str = "./Archipelago/output/", ap_directory: str = "./Archipelago/") -> Optional[Dict[str, Any]]:
     """Load and parse the .apsave file to get current game state."""
-    import sys
-    
     # Look for .apsave files in the output directory
     output_path = Path(output_directory)
     apsave_files = list(output_path.glob("*.apsave"))
@@ -95,9 +95,6 @@ def load_apsave_data(output_directory: str = "./Archipelago/output/", ap_directo
 
 def parse_apsave_alternative(apsave_file: Path) -> Optional[Dict[str, Any]]:
     """Alternative method to parse .apsave file without full Archipelago dependencies."""
-    import io
-    from collections import namedtuple
-    
     # Create a custom unpickler that can handle missing modules
     class SafeUnpickler(pickle.Unpickler):
         def find_class(self, module, name):

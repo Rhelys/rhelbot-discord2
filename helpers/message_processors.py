@@ -3,6 +3,8 @@ Message processors for handling different Archipelago message types.
 This module contains functions to process and format AP messages for Discord.
 """
 
+from helpers.data_helpers import load_apsave_data
+
 async def process_connected_message(msg: dict, channel, connection_data: dict):
     """Process Connected message type"""
     # Store connection data for player lookups - use a simpler approach
@@ -47,8 +49,6 @@ async def process_item_send_message(data: list, channel, player_progress: dict, 
                                   ap_dir: str, lookup_player_name_func, lookup_player_game_func,
                                   lookup_item_name_func, lookup_location_name_func, is_player_completed_func):
     """Process ItemSend message type within PrintJSON"""
-    from helpers.data_helpers import load_apsave_data
-
     try:
         # Extract components from the data array
         sender_id = None

@@ -7,84 +7,97 @@ import websockets
 import json
 import logging
 import subprocess
-import os
+import uuid
 from typing import Dict, Any, Optional, Tuple
-from datetime import datetime
+from ruyaml import YAML
+
+try:
+    import psutil
+    PSUTIL_AVAILABLE = True
+except ImportError:
+    PSUTIL_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 
-def get_server_password(password_file: str = "server_password.txt") -> str:
-    """Read the server password from server_password.txt file."""
+def get_server_password(host_file: str = "./Archipelago/host.yaml") -> str:
+    """Read the server password from Archipelago host.yaml configuration file."""
     try:
-        with open(password_file, "r", encoding="utf-8") as f:
-            password = f.read().strip()
-            if not password:
-                raise ValueError(f"{password_file} file is empty")
-            return password
+        yaml = YAML()
+
+        with open(host_file, "r", encoding="utf-8") as f:
+            config = yaml.load(f)
+
+        password = config.get("server_options", {}).get("password")
+
+        if password is None or password == "":
+            raise ValueError(f"No password set in {host_file} (server_options.password is null or empty)")
+
+        return password
     except FileNotFoundError:
-        raise FileNotFoundError(f"{password_file} file not found")
+        raise FileNotFoundError(f"{host_file} file not found")
     except Exception as e:
-        raise Exception(f"Error reading {password_file}: {e}")
+        raise Exception(f"Error reading {host_file}: {e}")
 
 def is_server_running(server_process=None) -> bool:
     """Check if the Archipelago server is currently running."""
-    try:
-        import psutil
-        
-        # Check for MultiServer.py processes
-        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-            try:
-                if (proc.info['name'] and 'python' in proc.info['name'].lower() and 
-                    proc.info['cmdline'] and any('MultiServer.py' in arg for arg in proc.info['cmdline'])):
-                    return True
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                pass
-                
-    except ImportError:
-        # Fallback: check if tracked process is still running
-        if server_process:
-            try:
-                # Check if process is still running
-                return server_process.poll() is None
-            except:
-                pass
-    
+    if PSUTIL_AVAILABLE:
+        try:
+            # Check for MultiServer.py processes
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                try:
+                    if (proc.info['name'] and 'python' in proc.info['name'].lower() and
+                        proc.info['cmdline'] and any('MultiServer.py' in arg for arg in proc.info['cmdline'])):
+                        return True
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    pass
+        except Exception:
+            pass
+
+    # Fallback: check if tracked process is still running
+    if server_process:
+        try:
+            # Check if process is still running
+            return server_process.poll() is None
+        except:
+            pass
+
     return False
 
 def kill_server_processes(server_process=None) -> list:
     """Kill running Archipelago server processes."""
     killed_processes = []
-    
-    try:
-        import psutil
-        
-        # Find and kill the MultiServer.py process
-        for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-            try:
-                # Check if this is a Python process running MultiServer.py
-                if (proc.info['name'] and 'python' in proc.info['name'].lower() and 
-                    proc.info['cmdline'] and any('MultiServer.py' in arg for arg in proc.info['cmdline'])):
-                    
-                    logger.info(f"Found MultiServer process: PID {proc.info['pid']}")
-                    proc.kill()
-                    killed_processes.append(proc.info['pid'])
-                    
-            except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                pass
-        
-        # Also try to terminate the tracked server process if it exists
-        if server_process:
-            try:
-                # Kill the batch file process and its children
-                parent = psutil.Process(server_process.pid)
-                for child in parent.children(recursive=True):
-                    child.kill()
-                parent.kill()
-                killed_processes.append(server_process.pid)
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                pass
-                
-    except ImportError:
+
+    if PSUTIL_AVAILABLE:
+        try:
+            # Find and kill the MultiServer.py process
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                try:
+                    # Check if this is a Python process running MultiServer.py
+                    if (proc.info['name'] and 'python' in proc.info['name'].lower() and
+                        proc.info['cmdline'] and any('MultiServer.py' in arg for arg in proc.info['cmdline'])):
+
+                        logger.info(f"Found MultiServer process: PID {proc.info['pid']}")
+                        proc.kill()
+                        killed_processes.append(proc.info['pid'])
+
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    pass
+
+            # Also try to terminate the tracked server process if it exists
+            if server_process:
+                try:
+                    # Kill the batch file process and its children
+                    parent = psutil.Process(server_process.pid)
+                    for child in parent.children(recursive=True):
+                        child.kill()
+                    parent.kill()
+                    killed_processes.append(server_process.pid)
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
+                    pass
+
+        except Exception as e:
+            logger.error(f"Error stopping server with psutil: {e}")
+    else:
         # Fallback method using taskkill on Windows
         try:
             subprocess.run([
@@ -92,12 +105,11 @@ def kill_server_processes(server_process=None) -> list:
             ], capture_output=True, text=True)
         except Exception as e:
             logger.error(f"Error stopping server: {e}")
-    
+
     return killed_processes
 
 def create_connection_message(password: Optional[str] = None, name: str = "Rhelbot", game: str = "") -> Dict[str, Any]:
     """Create a standard Archipelago connection message."""
-    import uuid
     return {
         "cmd": "Connect",
         "game": game,

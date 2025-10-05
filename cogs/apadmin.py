@@ -8,6 +8,7 @@ import logging
 from typing import Optional, Dict, Any
 from datetime import datetime
 import uuid
+from ruyaml import YAML
 
 # Import helper functions from the ap.py cog
 from helpers.server_helpers import get_server_password, is_server_running, connect_to_server
@@ -21,7 +22,6 @@ class ApAdminCog(commands.GroupCog, group_name="apadmin"):
     
     # Class constants
     DEFAULT_SERVER_URL = "ws://ap.rhelys.com:38281"
-    ADMIN_PASSWORD_FILE = "admin_password.txt"
     AUTHORIZED_USER_ID = 187800991675056129  # Only this Discord user can use admin commands
     
     def __init__(self, bot: commands.Bot) -> None:
@@ -38,18 +38,24 @@ class ApAdminCog(commands.GroupCog, group_name="apadmin"):
         """Check if the user is authorized to use admin commands."""
         return user_id == self.AUTHORIZED_USER_ID
     
-    def get_admin_password(self) -> str:
-        """Read the admin password from admin_password.txt file."""
+    def get_admin_password(self, host_file: str = "./Archipelago/host.yaml") -> str:
+        """Read the admin password from Archipelago host.yaml configuration file."""
         try:
-            with open(self.ADMIN_PASSWORD_FILE, "r", encoding="utf-8") as f:
-                password = f.read().strip()
-                if not password:
-                    raise ValueError(f"{self.ADMIN_PASSWORD_FILE} file is empty")
-                return password
+            yaml = YAML()
+
+            with open(host_file, "r", encoding="utf-8") as f:
+                config = yaml.load(f)
+
+            password = config.get("server_options", {}).get("server_password")
+
+            if password is None or password == "":
+                raise ValueError(f"No server_password set in {host_file} (server_options.server_password is null or empty)")
+
+            return password
         except FileNotFoundError:
-            raise FileNotFoundError(f"{self.ADMIN_PASSWORD_FILE} file not found")
+            raise FileNotFoundError(f"{host_file} file not found")
         except Exception as e:
-            raise Exception(f"Error reading {self.ADMIN_PASSWORD_FILE}: {e}")
+            raise Exception(f"Error reading {host_file}: {e}")
     
     async def connect_to_server(self, server_url: str, timeout: float = 15.0):
         """Create a websocket connection to the Archipelago server"""

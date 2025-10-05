@@ -599,7 +599,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
                 remove(filepath)
 
     """
-    /ap start - Generates the game files from uploaded player files and then starts the server. Optionally
+    /ap newgame - Generates the game files from uploaded player files and then starts the server. Optionally
                 takes in a pre-generated file to start up.
                 
     Parameters: [Optional] apfile: Generated .zip file from Archipelago to start with the server
@@ -609,12 +609,12 @@ class ApCog(commands.GroupCog, group_name="ap"):
     # Todo - Find out how to connect the bot to the server + channel for status messages
     # https://github.com/LegendaryLinux/ArchipelaBot
     @app_commands.command(
-        name="start",
+        name="newgame",
         description="Starts the game. Either generates or takes an optional "
         "pre-generated game file.",
     )
     @app_commands.describe(apfile="Pre-generated zip file for an Archipelago game")
-    async def ap_start(
+    async def ap_newgame(
         self, interaction: discord.Interaction, apfile: Optional[discord.Attachment]
     ) -> None:
         await interaction.response.send_message(
@@ -950,6 +950,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
         if server_running:
             status_parts.append(f"🟢 **Server Status**: Running (PID: {server_pid})")
             status_parts.append("📡 **Connection**: ap.rhelys.com:38281")
+            status_parts.append("📡 **HTTPS Connection**: ap.rhelys.com:38288")
         else:
             status_parts.append("🔴 **Server Status**: Not running")
         
@@ -959,12 +960,6 @@ class ApCog(commands.GroupCog, group_name="ap"):
             status_parts.append(f"👥 **Current Players**: {', '.join(playerlist)}")
         else:
             status_parts.append("👥 **Current Players**: None")
-        
-        # Game file status
-        if path.exists(f"{self.output_directory}/donkey.zip"):
-            status_parts.append("📁 **Game File**: Ready (donkey.zip)")
-        else:
-            status_parts.append("📁 **Game File**: Not found")
 
         await interaction.followup.send("\n".join(status_parts))
 

@@ -8,6 +8,7 @@ import pickle
 import zlib
 import zipfile
 import re
+import io
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, Set
 
@@ -189,8 +190,7 @@ def get_locations_from_archipelago_file(archipelago_file: Path, player_id: int) 
                         def __init__(self, *args, **kwargs):
                             pass
                     return GenericClass
-        
-        import io
+
         unpickler = ArchipelagoUnpickler(io.BytesIO(decompressed_data))
         multidata = unpickler.load()
         
