@@ -48,10 +48,11 @@ class ApAdminCog(commands.GroupCog, group_name="apadmin"):
 
             password = config.get("server_options", {}).get("server_password")
 
-            if password is None or password == "":
-                raise ValueError(f"No server_password set in {host_file} (server_options.server_password is null or empty)")
+            # Treat None (null in YAML) as empty string (no password)
+            if password is None:
+                return ""
 
-            return password
+            return str(password)
         except FileNotFoundError:
             raise FileNotFoundError(f"{host_file} file not found")
         except Exception as e:

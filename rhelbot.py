@@ -17,6 +17,10 @@ intents.message_content = True
 intents.members = True
 rhelbot = commands.Bot(command_prefix="!rhel", intents=intents)
 
+# Store active Archipelago connections across cog reloads
+# Format: {server_url: {'task': asyncio.Task, 'channel_id': int, 'password': str, 'websocket': websocket}}
+rhelbot.active_ap_connections = {}
+
 waltzServer = discord.Object(id=266039174333726725)
 testServer = discord.Object(id=1228942380518998137)
 

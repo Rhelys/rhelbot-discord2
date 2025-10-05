@@ -40,21 +40,61 @@ class ApCog(commands.GroupCog, group_name="ap"):
     def __init__(self, bot: commands.Bot) -> None:
         self.bot = bot
         super().__init__()
-        
-        # Tracking variables
-        self.active_connections: Dict[str, Dict] = {}
+
+        # Tracking variables - use bot instance for active_connections to persist across reloads
+        # self.active_connections is kept as a property that references bot.active_ap_connections
         self.game_data: Dict[str, Dict] = {}
         self.connection_data: Dict[str, Dict] = {}
         self.player_progress: Dict[int, set] = {}
         self.server_process = None
         self.player = ""
         self.game = ""
-        
+
         # Create instance attributes for class constants for compatibility
         self.output_directory = self.OUTPUT_DIR
         self.ap_directory = self.AP_DIR
         self.system_extensions = self.SYSTEM_EXTENSIONS
         self.status_file = self.STATUS_FILE
+
+    @property
+    def active_connections(self):
+        """Reference to bot's persistent connection storage"""
+        return self.bot.active_ap_connections
+
+    async def cog_load(self):
+        """Called when the cog is loaded - restore any existing connections"""
+        print("ApCog loaded - checking for existing connections...")
+
+        # Iterate through existing connections and restore channel references
+        for server_url, connection in list(self.active_connections.items()):
+            try:
+                # Get the channel
+                channel = self.bot.get_channel(connection['channel_id'])
+                if channel:
+                    # Check if task is still running
+                    if connection['task'].done():
+                        print(f"Task for {server_url} has stopped, removing connection")
+                        del self.active_connections[server_url]
+                    else:
+                        print(f"Restored connection to {server_url} in channel {channel.name}")
+                else:
+                    print(f"Channel {connection['channel_id']} not found, removing connection {server_url}")
+                    connection['task'].cancel()
+                    del self.active_connections[server_url]
+            except Exception as e:
+                print(f"Error restoring connection {server_url}: {e}")
+                del self.active_connections[server_url]
+
+        if self.active_connections:
+            print(f"Restored {len(self.active_connections)} active connection(s)")
+        else:
+            print("No active connections to restore")
+
+    async def cog_unload(self):
+        """Called when the cog is unloaded - keep tasks running but log the state"""
+        print(f"ApCog unloading - {len(self.active_connections)} connection(s) will persist")
+        for server_url in self.active_connections:
+            print(f"  - {server_url} (task still running)")
 
     def resolve_player_name(self, discord_user_id: int, player_input: str):
         """
@@ -350,11 +390,12 @@ class ApCog(commands.GroupCog, group_name="ap"):
         
         # Start the websocket listener task
         task = asyncio.create_task(self.websocket_listener(server_url, channel_id_int, password))
-        
-        # Track the connection
+
+        # Track the connection (stored in bot instance to persist across cog reloads)
         self.active_connections[server_url] = {
             "task": task,
             "channel_id": channel_id_int,
+            "password": password,  # Store password for automatic reconnection
             "websocket": None
         }
         
@@ -606,8 +647,6 @@ class ApCog(commands.GroupCog, group_name="ap"):
     
     """
 
-    # Todo - Find out how to connect the bot to the server + channel for status messages
-    # https://github.com/LegendaryLinux/ArchipelaBot
     @app_commands.command(
         name="newgame",
         description="Starts the game. Either generates or takes an optional "
@@ -621,7 +660,6 @@ class ApCog(commands.GroupCog, group_name="ap"):
             "Attempting to start Archipelago server, hold please...\nError messages will be sent to this channel"
         )
 
-        # Clean up existing files - this is a port from the update command later in the file
         def outputfiles():
             return listdir(self.output_directory)
 
