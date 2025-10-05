@@ -563,20 +563,185 @@ class ApAdminCog(commands.GroupCog, group_name="apadmin"):
             await interaction.followup.send(f"❌ Error executing send command: {str(e)}")
     
     @app_commands.command(
+        name="send_multiple",
+        description="Send multiples of an item to the specified player"
+    )
+    @app_commands.describe(
+        amount="The number of items to send",
+        player_name="The player who should receive the items",
+        item_name="The name of the item to send"
+    )
+    async def admin_send_multiple(self, interaction: discord.Interaction, amount: int, player_name: str, item_name: str):
+        await interaction.response.defer()
+
+        # Check if user is authorized
+        if not self.is_authorized_user(interaction.user.id):
+            await interaction.followup.send("❌ You are not authorized to use admin commands.")
+            return
+
+        # Check if server is running
+        if not is_server_running():
+            await interaction.followup.send("❌ Archipelago server is not running.")
+            return
+
+        try:
+            # Send the send_multiple command
+            command = f"!admin /send_multiple {amount} {player_name} {item_name}"
+            print(f"Executing admin send_multiple command: {command}")
+            response = await self.send_admin_command(command)
+            print(f"Admin send_multiple response: {response}")
+
+            if response is None:
+                await interaction.followup.send("❌ Failed to connect to server or authenticate as admin.")
+                return
+
+            # Format the response
+            if "error" in response.lower() or "failed" in response.lower():
+                await interaction.followup.send(f"❌ Send multiple command failed: {response}")
+            else:
+                await interaction.followup.send(f"✅ Sent {amount}x **{item_name}** to **{player_name}**\n```{response}```")
+
+        except Exception as e:
+            await interaction.followup.send(f"❌ Error executing send_multiple command: {str(e)}")
+
+    @app_commands.command(
+        name="hint",
+        description="Send out a hint for a player's item to their team"
+    )
+    @app_commands.describe(
+        player_name="The player whose item should be hinted",
+        item_name="The name of the item to hint"
+    )
+    async def admin_hint(self, interaction: discord.Interaction, player_name: str, item_name: str):
+        await interaction.response.defer()
+
+        # Check if user is authorized
+        if not self.is_authorized_user(interaction.user.id):
+            await interaction.followup.send("❌ You are not authorized to use admin commands.")
+            return
+
+        # Check if server is running
+        if not is_server_running():
+            await interaction.followup.send("❌ Archipelago server is not running.")
+            return
+
+        try:
+            # Send the hint command
+            command = f"!admin /hint {player_name} {item_name}"
+            print(f"Executing admin hint command: {command}")
+            response = await self.send_admin_command(command)
+            print(f"Admin hint response: {response}")
+
+            if response is None:
+                await interaction.followup.send("❌ Failed to connect to server or authenticate as admin.")
+                return
+
+            # Format the response
+            if "error" in response.lower() or "failed" in response.lower():
+                await interaction.followup.send(f"❌ Hint command failed: {response}")
+            else:
+                await interaction.followup.send(f"✅ Sent hint for **{item_name}** belonging to **{player_name}**\n```{response}```")
+
+        except Exception as e:
+            await interaction.followup.send(f"❌ Error executing hint command: {str(e)}")
+
+    @app_commands.command(
+        name="hint_location",
+        description="Send out a hint for a player's location to their team"
+    )
+    @app_commands.describe(
+        player_name="The player whose location should be hinted",
+        location_name="The name of the location to hint"
+    )
+    async def admin_hint_location(self, interaction: discord.Interaction, player_name: str, location_name: str):
+        await interaction.response.defer()
+
+        # Check if user is authorized
+        if not self.is_authorized_user(interaction.user.id):
+            await interaction.followup.send("❌ You are not authorized to use admin commands.")
+            return
+
+        # Check if server is running
+        if not is_server_running():
+            await interaction.followup.send("❌ Archipelago server is not running.")
+            return
+
+        try:
+            # Send the hint_location command
+            command = f"!admin /hint_location {player_name} {location_name}"
+            print(f"Executing admin hint_location command: {command}")
+            response = await self.send_admin_command(command)
+            print(f"Admin hint_location response: {response}")
+
+            if response is None:
+                await interaction.followup.send("❌ Failed to connect to server or authenticate as admin.")
+                return
+
+            # Format the response
+            if "error" in response.lower() or "failed" in response.lower():
+                await interaction.followup.send(f"❌ Hint location command failed: {response}")
+            else:
+                await interaction.followup.send(f"✅ Sent hint for **{location_name}** belonging to **{player_name}**\n```{response}```")
+
+        except Exception as e:
+            await interaction.followup.send(f"❌ Error executing hint_location command: {str(e)}")
+
+    @app_commands.command(
+        name="send_location",
+        description="Send out item from a player's location as though they checked it"
+    )
+    @app_commands.describe(
+        player_name="The player whose location should be checked",
+        location_name="The name of the location to check"
+    )
+    async def admin_send_location(self, interaction: discord.Interaction, player_name: str, location_name: str):
+        await interaction.response.defer()
+
+        # Check if user is authorized
+        if not self.is_authorized_user(interaction.user.id):
+            await interaction.followup.send("❌ You are not authorized to use admin commands.")
+            return
+
+        # Check if server is running
+        if not is_server_running():
+            await interaction.followup.send("❌ Archipelago server is not running.")
+            return
+
+        try:
+            # Send the send_location command
+            command = f"!admin /send_location {player_name} {location_name}"
+            print(f"Executing admin send_location command: {command}")
+            response = await self.send_admin_command(command)
+            print(f"Admin send_location response: {response}")
+
+            if response is None:
+                await interaction.followup.send("❌ Failed to connect to server or authenticate as admin.")
+                return
+
+            # Format the response
+            if "error" in response.lower() or "failed" in response.lower():
+                await interaction.followup.send(f"❌ Send location command failed: {response}")
+            else:
+                await interaction.followup.send(f"✅ Checked location **{location_name}** for **{player_name}**\n```{response}```")
+
+        except Exception as e:
+            await interaction.followup.send(f"❌ Error executing send_location command: {str(e)}")
+
+    @app_commands.command(
         name="status",
         description="Check admin session status and connection"
     )
     async def admin_status(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        
+
         # Check if user is authorized
         if not self.is_authorized_user(interaction.user.id):
             await interaction.followup.send("❌ You are not authorized to use admin commands.")
             return
-        
+
         status_lines = []
         status_lines.append("🔧 **Admin Session Status**\n")
-        
+
         if not self.admin_sessions:
             status_lines.append("❌ No active admin sessions")
         else:
@@ -590,11 +755,11 @@ class ApAdminCog(commands.GroupCog, group_name="apadmin"):
                     status_lines.append(f"   └ Last used: {last_used}")
                 else:
                     status_lines.append(f"❌ **{server_url}** (Connection closed)")
-        
+
         # Check server running status
         server_running = is_server_running()
         status_lines.append(f"\n🖥️ **Server Status**: {'✅ Running' if server_running else '❌ Not running'}")
-        
+
         status_message = "\n".join(status_lines)
         await interaction.followup.send(status_message)
     
