@@ -1086,29 +1086,50 @@ class ApCog(commands.GroupCog, group_name="ap"):
 
     @app_commands.command(
         name="stop",
-        description="Stops the currently running Archipelago server",
+        description="Stops the currently running Archipelago server and untracks all connections",
     )
     async def ap_stop(self, interaction: discord.Interaction):
         await interaction.response.defer()
-        
+
         try:
-            
+            # First, untrack all active connections
+            untracked_servers = []
+            if self.active_connections:
+                for server_url in list(self.active_connections.keys()):
+                    connection = self.active_connections[server_url]
+
+                    # Cancel the background task first
+                    connection["task"].cancel()
+
+                    # Close the websocket if it exists
+                    if connection["websocket"]:
+                        try:
+                            await connection["websocket"].close()
+                        except Exception as e:
+                            print(f"Error closing websocket: {e}")
+
+                    # Remove from tracking
+                    del self.active_connections[server_url]
+                    untracked_servers.append(server_url)
+
+            untrack_message = f"\nUntracked servers: {', '.join(untracked_servers)}" if untracked_servers else ""
+
             # Find and kill the MultiServer.py process
             killed_processes = []
-            
+
             for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
                 try:
                     # Check if this is a Python process running MultiServer.py
-                    if (proc.info['name'] and 'python' in proc.info['name'].lower() and 
+                    if (proc.info['name'] and 'python' in proc.info['name'].lower() and
                         proc.info['cmdline'] and any('MultiServer.py' in arg for arg in proc.info['cmdline'])):
-                        
+
                         print(f"Found MultiServer process: PID {proc.info['pid']}, CMD: {' '.join(proc.info['cmdline'])}")
                         proc.kill()
                         killed_processes.append(proc.info['pid'])
-                        
+
                 except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                     pass
-            
+
             # Also try to terminate the tracked server process if it exists
             if self.server_process:
                 try:
@@ -1121,7 +1142,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
                     self.server_process = None
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     pass
-            
+
             if killed_processes:
                 # Delete the local datapackage when server is stopped
                 try:
@@ -1131,14 +1152,14 @@ class ApCog(commands.GroupCog, group_name="ap"):
                 except Exception as dp_error:
                     datapackage_message = f"\nWarning: Failed to clean up datapackage: {str(dp_error)}"
                     logger.error(f"Error deleting datapackage on server stop: {dp_error}")
-                
+
                 await interaction.followup.send(
                     f"✅ Successfully stopped Archipelago server.\n"
-                    f"Killed processes: {', '.join(map(str, killed_processes))}{datapackage_message}"
+                    f"Killed processes: {', '.join(map(str, killed_processes))}{datapackage_message}{untrack_message}"
                 )
             else:
                 await interaction.followup.send("❌ No running Archipelago server found.")
-                
+
         except ImportError:
             # Fallback method using taskkill on Windows
             try:
@@ -1146,12 +1167,12 @@ class ApCog(commands.GroupCog, group_name="ap"):
                 result = subprocess.run([
                     "taskkill", "/F", "/IM", "python.exe", "/FI", "WINDOWTITLE eq *MultiServer*"
                 ], capture_output=True, text=True)
-                
+
                 if result.returncode == 0:
                     await interaction.followup.send("✅ Successfully stopped Archipelago server using taskkill.")
                 else:
                     await interaction.followup.send("❌ No running Archipelago server found or failed to stop.")
-                    
+
             except Exception as e:
                 await interaction.followup.send(f"❌ Error stopping server: {str(e)}")
 
