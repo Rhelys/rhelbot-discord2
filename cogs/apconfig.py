@@ -3,6 +3,7 @@ from discord import app_commands
 from discord.ext import commands
 import os
 import json
+import logging
 from datetime import datetime
 
 # Import helper functions
@@ -17,6 +18,8 @@ from helpers.s3_helpers import (
 from helpers.data_helpers import parse_yaml_metadata
 
 donkeyServer = discord.Object(id=591625815528177690)
+
+logger = logging.getLogger(__name__)
 
 @app_commands.guilds(donkeyServer)
 class ApConfigCog(commands.GroupCog, group_name="apconfig"):
@@ -33,9 +36,11 @@ class ApConfigCog(commands.GroupCog, group_name="apconfig"):
 
         # Ensure temp directory exists
         os.makedirs(self.TEMP_DIR, exist_ok=True)
+        logger.info("ApConfigCog initialized")
 
         # Load cache
         self.cache = load_cache(self.CACHE_FILE)
+        logger.debug(f"Loaded cache with {len(self.cache)} user(s)")
 
     @app_commands.command(name="upload", description="Upload a player YAML configuration file")
     @app_commands.describe(
@@ -49,26 +54,32 @@ class ApConfigCog(commands.GroupCog, group_name="apconfig"):
         description: str = ""
     ) -> None:
         """Upload a player YAML file to S3 storage"""
+        logger.info(f"Upload command invoked by user {interaction.user.id} ({interaction.user.name})")
         await interaction.response.defer()
 
         # Validate file extension
         if not playerfile.filename.endswith(".yaml"):
+            logger.warning(f"User {interaction.user.id} attempted to upload non-YAML file: {playerfile.filename}")
             await interaction.followup.send(
                 "File must be a .yaml file. Please upload a valid Archipelago player configuration."
             )
             return
 
         await interaction.followup.send("Processing and uploading file...")
+        logger.debug(f"Processing file: {playerfile.filename}")
 
         # Save file temporarily
         temp_filepath = os.path.join(self.TEMP_DIR, playerfile.filename)
         await playerfile.save(temp_filepath)
+        logger.debug(f"Saved temporary file to {temp_filepath}")
 
         try:
             # Extract metadata from YAML
             player_name, game_name = parse_yaml_metadata(temp_filepath)
+            logger.debug(f"Extracted metadata - Player: {player_name}, Game: {game_name}")
 
             if not player_name:
+                logger.warning(f"Failed to extract player name from {playerfile.filename}")
                 await interaction.followup.send(
                     "Could not extract player name from YAML. Ensure the file has a 'name' field."
                 )
@@ -87,6 +98,7 @@ class ApConfigCog(commands.GroupCog, group_name="apconfig"):
 
             # Filename: playername_gamename_timestamp.yaml (timestamp ensures uniqueness)
             s3_key = f"{discord_user_id}/{player_name}_{safe_game_name}_{timestamp}.yaml"
+            logger.info(f"Uploading to S3 - Key: {s3_key}")
 
             # Prepare metadata
             metadata = {
@@ -102,6 +114,7 @@ class ApConfigCog(commands.GroupCog, group_name="apconfig"):
             success = upload_to_s3(temp_filepath, self.S3_BUCKET, s3_key, metadata)
 
             if success:
+                logger.info(f"Successfully uploaded {s3_key} for user {discord_user_id}")
                 # Refresh cache for this user
                 refresh_user_cache(self.cache, self.CACHE_FILE, self.S3_BUCKET, discord_user_id)
 
@@ -109,14 +122,17 @@ class ApConfigCog(commands.GroupCog, group_name="apconfig"):
                     f"✅ Successfully uploaded configuration for **{player_name}** ({game_name or 'Unknown game'})"
                 )
             else:
+                logger.error(f"Failed to upload {s3_key} for user {discord_user_id}")
                 await interaction.followup.send(
                     "❌ Failed to upload file to S3. Please try again or contact an admin."
                 )
 
             # Clean up temp file
             os.remove(temp_filepath)
+            logger.debug(f"Cleaned up temporary file: {temp_filepath}")
 
         except Exception as e:
+            logger.error(f"Error processing upload for user {interaction.user.id}: {str(e)}", exc_info=True)
             await interaction.followup.send(f"Error processing file: {str(e)}")
             if os.path.exists(temp_filepath):
                 os.remove(temp_filepath)
@@ -124,12 +140,15 @@ class ApConfigCog(commands.GroupCog, group_name="apconfig"):
     @app_commands.command(name="list", description="List your uploaded player configurations")
     async def list_configs(self, interaction: discord.Interaction) -> None:
         """List all player configurations for the current user"""
+        logger.info(f"List command invoked by user {interaction.user.id} ({interaction.user.name})")
         await interaction.response.defer()
 
         discord_user_id = str(interaction.user.id)
 
         # Refresh cache from S3
+        logger.debug(f"Refreshing cache for user {discord_user_id}")
         user_files = refresh_user_cache(self.cache, self.CACHE_FILE, self.S3_BUCKET, discord_user_id)
+        logger.info(f"User {discord_user_id} has {len(user_files)} configuration file(s)")
 
         if not user_files:
             await interaction.followup.send("You have no uploaded player configurations.")
@@ -167,6 +186,7 @@ class ApConfigCog(commands.GroupCog, group_name="apconfig"):
     @app_commands.describe(number="The configuration number from /apconfig list")
     async def get_config(self, interaction: discord.Interaction, number: int) -> None:
         """Download a specific player configuration file"""
+        logger.info(f"Get command invoked by user {interaction.user.id} ({interaction.user.name}) for config #{number}")
         await interaction.response.defer()
 
         discord_user_id = str(interaction.user.id)
@@ -175,12 +195,14 @@ class ApConfigCog(commands.GroupCog, group_name="apconfig"):
         user_files = self.cache.get(discord_user_id, [])
 
         if not user_files:
+            logger.warning(f"User {discord_user_id} attempted to get config but has no files")
             await interaction.followup.send(
                 "You have no uploaded configurations. Use `/apconfig list` to refresh."
             )
             return
 
         if number < 1 or number > len(user_files):
+            logger.warning(f"User {discord_user_id} requested invalid config number {number} (has {len(user_files)} files)")
             await interaction.followup.send(
                 f"Invalid number. Please choose between 1 and {len(user_files)}."
             )
@@ -190,12 +212,14 @@ class ApConfigCog(commands.GroupCog, group_name="apconfig"):
         selected_file = user_files[number - 1]
         s3_key = selected_file["s3_key"]
         player_name = selected_file.get("player_name", "config")
+        logger.debug(f"Downloading S3 key: {s3_key} for user {discord_user_id}")
 
         # Download from S3
         temp_download_path = os.path.join(self.TEMP_DIR, f"{player_name}_{number}.yaml")
         success = download_from_s3(self.S3_BUCKET, s3_key, temp_download_path)
 
         if success and os.path.exists(temp_download_path):
+            logger.info(f"Successfully downloaded {s3_key} for user {discord_user_id}")
             # Send file to Discord
             await interaction.followup.send(
                 f"📥 Here's your configuration for **{player_name}**:",
@@ -204,7 +228,9 @@ class ApConfigCog(commands.GroupCog, group_name="apconfig"):
 
             # Clean up
             os.remove(temp_download_path)
+            logger.debug(f"Cleaned up temporary download: {temp_download_path}")
         else:
+            logger.error(f"Failed to download {s3_key} for user {discord_user_id}")
             await interaction.followup.send(
                 "❌ Failed to download file from S3. It may have been deleted."
             )
@@ -213,6 +239,7 @@ class ApConfigCog(commands.GroupCog, group_name="apconfig"):
     @app_commands.describe(number="The configuration number from /apconfig list")
     async def delete_config(self, interaction: discord.Interaction, number: int) -> None:
         """Delete a specific player configuration file"""
+        logger.info(f"Delete command invoked by user {interaction.user.id} ({interaction.user.name}) for config #{number}")
         await interaction.response.defer()
 
         discord_user_id = str(interaction.user.id)
@@ -221,12 +248,14 @@ class ApConfigCog(commands.GroupCog, group_name="apconfig"):
         user_files = self.cache.get(discord_user_id, [])
 
         if not user_files:
+            logger.warning(f"User {discord_user_id} attempted to delete config but has no files")
             await interaction.followup.send(
                 "You have no uploaded configurations. Use `/apconfig list` to refresh."
             )
             return
 
         if number < 1 or number > len(user_files):
+            logger.warning(f"User {discord_user_id} requested invalid config number {number} (has {len(user_files)} files)")
             await interaction.followup.send(
                 f"Invalid number. Please choose between 1 and {len(user_files)}."
             )
@@ -236,11 +265,13 @@ class ApConfigCog(commands.GroupCog, group_name="apconfig"):
         selected_file = user_files[number - 1]
         s3_key = selected_file["s3_key"]
         player_name = selected_file.get("player_name", "Unknown")
+        logger.info(f"Deleting S3 key: {s3_key} for user {discord_user_id}")
 
         # Delete from S3
         success = delete_from_s3(self.S3_BUCKET, s3_key)
 
         if success:
+            logger.info(f"Successfully deleted {s3_key} for user {discord_user_id}")
             # Refresh cache
             refresh_user_cache(self.cache, self.CACHE_FILE, self.S3_BUCKET, discord_user_id)
 
@@ -248,6 +279,7 @@ class ApConfigCog(commands.GroupCog, group_name="apconfig"):
                 f"🗑️ Successfully deleted configuration for **{player_name}**"
             )
         else:
+            logger.error(f"Failed to delete {s3_key} for user {discord_user_id}")
             await interaction.followup.send(
                 "❌ Failed to delete file from S3. Please try again or contact an admin."
             )
@@ -256,6 +288,7 @@ class ApConfigCog(commands.GroupCog, group_name="apconfig"):
     @app_commands.describe(number="The configuration number from /apconfig list")
     async def joinwith(self, interaction: discord.Interaction, number: int) -> None:
         """Join an Archipelago game using a stored configuration file"""
+        logger.info(f"Joinwith command invoked by user {interaction.user.id} ({interaction.user.name}) for config #{number}")
         await interaction.response.defer()
 
         discord_user_id = str(interaction.user.id)
@@ -264,12 +297,14 @@ class ApConfigCog(commands.GroupCog, group_name="apconfig"):
         user_files = self.cache.get(discord_user_id, [])
 
         if not user_files:
+            logger.warning(f"User {discord_user_id} attempted to joinwith but has no files")
             await interaction.followup.send(
                 "You have no uploaded configurations. Use `/apconfig list` to refresh, or `/apconfig upload` to add one."
             )
             return
 
         if number < 1 or number > len(user_files):
+            logger.warning(f"User {discord_user_id} requested invalid config number {number} (has {len(user_files)} files)")
             await interaction.followup.send(
                 f"Invalid number. Please choose between 1 and {len(user_files)}."
             )
@@ -280,6 +315,7 @@ class ApConfigCog(commands.GroupCog, group_name="apconfig"):
         s3_key = selected_file["s3_key"]
         player_name = selected_file.get("player_name", "Unknown")
         game_name = selected_file.get("game", "Unknown")
+        logger.info(f"User {discord_user_id} joining with player: {player_name}, game: {game_name}")
 
         # Download from S3 to the Archipelago players directory
         players_dir = "./Archipelago/players/"
@@ -288,10 +324,12 @@ class ApConfigCog(commands.GroupCog, group_name="apconfig"):
         # Use a clean filename for the local copy
         local_filename = f"{player_name}_{game_name}.yaml"
         filepath = os.path.join(players_dir, local_filename)
+        logger.debug(f"Downloading {s3_key} to {filepath}")
 
         success = download_from_s3(self.S3_BUCKET, s3_key, filepath)
 
         if not success or not os.path.exists(filepath):
+            logger.error(f"Failed to download {s3_key} for joinwith command")
             await interaction.followup.send(
                 "❌ Failed to download file from S3. It may have been deleted."
             )
@@ -330,6 +368,7 @@ class ApConfigCog(commands.GroupCog, group_name="apconfig"):
 
                 # If the same Discord user is updating their file, allow it
                 if existing_discord_user == str(interaction.user.id):
+                    logger.info(f"User {discord_user_id} updating existing player {player_name}")
                     game_status["players"][player_name] = {
                         "filepath": filepath,
                         "game": game_name,
@@ -345,6 +384,7 @@ class ApConfigCog(commands.GroupCog, group_name="apconfig"):
                         f"✅ Updated configuration for **{player_name}** ({game_name})"
                     )
                 else:
+                    logger.warning(f"Player {player_name} already exists and belongs to user {existing_discord_user}, not {discord_user_id}")
                     await interaction.followup.send(
                         f"❌ {player_name} already exists and belongs to another user. "
                         "Choose a different player name in your YAML file."
@@ -353,6 +393,7 @@ class ApConfigCog(commands.GroupCog, group_name="apconfig"):
                     return
             else:
                 # New player - add to game status
+                logger.info(f"Adding new player {player_name} for user {discord_user_id}")
                 game_status["players"][player_name] = {
                     "filepath": filepath,
                     "game": game_name,
@@ -376,6 +417,8 @@ class ApConfigCog(commands.GroupCog, group_name="apconfig"):
                 with open(status_file, 'w') as f:
                     json.dump(game_status, f, indent=2)
 
+                logger.info(f"Successfully joined player {player_name} to game for user {discord_user_id}")
+
                 # Send success message with file attachment
                 with open(filepath, "rb") as submitted_file:
                     await interaction.followup.send(
@@ -384,6 +427,7 @@ class ApConfigCog(commands.GroupCog, group_name="apconfig"):
                     )
 
         except Exception as e:
+            logger.error(f"Error in joinwith command for user {interaction.user.id}: {str(e)}", exc_info=True)
             await interaction.followup.send(f"❌ Error processing file: {str(e)}")
             if os.path.exists(filepath):
                 os.remove(filepath)

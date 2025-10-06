@@ -4,9 +4,12 @@ S3 storage helper functions for Archipelago player configuration management.
 
 import os
 import json
+import logging
 import subprocess
 from typing import Dict, List, Optional
 from datetime import datetime
+
+logger = logging.getLogger(__name__)
 
 
 def upload_to_s3(filepath: str, bucket: str, s3_key: str, metadata: Dict[str, str]) -> bool:
@@ -23,6 +26,7 @@ def upload_to_s3(filepath: str, bucket: str, s3_key: str, metadata: Dict[str, st
         True if upload successful, False otherwise
     """
     try:
+        logger.debug(f"Uploading {filepath} to s3://{bucket}/{s3_key}")
         # Build metadata string for AWS CLI
         metadata_str = ",".join([f"{k}={v}" for k, v in metadata.items()])
 
@@ -36,12 +40,13 @@ def upload_to_s3(filepath: str, bucket: str, s3_key: str, metadata: Dict[str, st
         result = subprocess.run(cmd, capture_output=True, text=True)
 
         if result.returncode == 0:
+            logger.info(f"Successfully uploaded to s3://{bucket}/{s3_key}")
             return True
         else:
-            print(f"S3 upload error: {result.stderr}")
+            logger.error(f"S3 upload error: {result.stderr}")
             return False
     except Exception as e:
-        print(f"Error uploading to S3: {e}")
+        logger.error(f"Error uploading to S3: {e}", exc_info=True)
         return False
 
 
@@ -58,6 +63,7 @@ def download_from_s3(bucket: str, s3_key: str, local_path: str) -> bool:
         True if download successful, False otherwise
     """
     try:
+        logger.debug(f"Downloading s3://{bucket}/{s3_key} to {local_path}")
         cmd = [
             "aws", "s3", "cp",
             f"s3://{bucket}/{s3_key}",
@@ -67,12 +73,13 @@ def download_from_s3(bucket: str, s3_key: str, local_path: str) -> bool:
         result = subprocess.run(cmd, capture_output=True, text=True)
 
         if result.returncode == 0:
+            logger.info(f"Successfully downloaded s3://{bucket}/{s3_key}")
             return True
         else:
-            print(f"S3 download error: {result.stderr}")
+            logger.error(f"S3 download error: {result.stderr}")
             return False
     except Exception as e:
-        print(f"Error downloading from S3: {e}")
+        logger.error(f"Error downloading from S3: {e}", exc_info=True)
         return False
 
 
@@ -88,6 +95,7 @@ def delete_from_s3(bucket: str, s3_key: str) -> bool:
         True if deletion successful, False otherwise
     """
     try:
+        logger.debug(f"Deleting s3://{bucket}/{s3_key}")
         cmd = [
             "aws", "s3", "rm",
             f"s3://{bucket}/{s3_key}"
@@ -96,12 +104,13 @@ def delete_from_s3(bucket: str, s3_key: str) -> bool:
         result = subprocess.run(cmd, capture_output=True, text=True)
 
         if result.returncode == 0:
+            logger.info(f"Successfully deleted s3://{bucket}/{s3_key}")
             return True
         else:
-            print(f"S3 delete error: {result.stderr}")
+            logger.error(f"S3 delete error: {result.stderr}")
             return False
     except Exception as e:
-        print(f"Error deleting from S3: {e}")
+        logger.error(f"Error deleting from S3: {e}", exc_info=True)
         return False
 
 
@@ -117,6 +126,7 @@ def list_user_files_from_s3(bucket: str, discord_user_id: str) -> List[Dict]:
         List of dictionaries containing file information and metadata
     """
     try:
+        logger.debug(f"Listing S3 files for user {discord_user_id}")
         # List objects for this user
         cmd = [
             "aws", "s3api", "list-objects-v2",
@@ -128,11 +138,13 @@ def list_user_files_from_s3(bucket: str, discord_user_id: str) -> List[Dict]:
         result = subprocess.run(cmd, capture_output=True, text=True)
 
         if result.returncode != 0:
+            logger.warning(f"Failed to list S3 objects for user {discord_user_id}")
             return []
 
         objects = json.loads(result.stdout)
 
         if "Contents" not in objects:
+            logger.debug(f"No files found for user {discord_user_id}")
             return []
 
         user_files = []
@@ -165,10 +177,11 @@ def list_user_files_from_s3(bucket: str, discord_user_id: str) -> List[Dict]:
                     "size": obj.get("Size", 0)
                 })
 
+        logger.info(f"Found {len(user_files)} file(s) for user {discord_user_id}")
         return user_files
 
     except Exception as e:
-        print(f"Error listing S3 files: {e}")
+        logger.error(f"Error listing S3 files: {e}", exc_info=True)
         return []
 
 
@@ -220,10 +233,12 @@ def refresh_user_cache(cache: Dict, cache_file: str, bucket: str, discord_user_i
     Returns:
         List of user's files with metadata
     """
+    logger.debug(f"Refreshing cache for user {discord_user_id}")
     user_files = list_user_files_from_s3(bucket, discord_user_id)
 
     # Update cache
     cache[discord_user_id] = user_files
     save_cache(cache, cache_file)
+    logger.debug(f"Cache refreshed for user {discord_user_id} with {len(user_files)} file(s)")
 
     return user_files

@@ -257,7 +257,11 @@ class ApCog(commands.GroupCog, group_name="ap"):
         return lookup_player_game(player_id, self.connection_data)
 
     async def process_ap_message(self, msg: dict, channel):
-        """Process and format Archipelago messages for Discord"""
+        """Process and format Archipelago messages for Discord
+
+        Returns:
+            bool: True if game completion was detected and tracking should stop, False otherwise
+        """
         cmd = msg.get("cmd", "")
 
         # Debug: Print all received messages to console for troubleshooting
@@ -283,7 +287,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
             # Skip chat messages from players
             if msg_type == "Chat":
                 print(f"Skipping chat message: {data}")
-                return
+                return False
 
             elif msg_type == "ItemSend":
                 await process_item_send_message(
@@ -295,13 +299,17 @@ class ApCog(commands.GroupCog, group_name="ap"):
             elif msg_type in ["ItemReceive"]:
                 # Skip item receive messages from players
                 print(f"Skipping ItemReceive message: {data}")
-                return
+                return False
 
             elif msg_type in ["Goal", "Release", "Collect", "Countdown"]:
                 await process_game_event_message(msg_type, data, channel)
 
             elif msg_type in ["Tutorial", "ServerChat"]:
-                await process_server_message(msg_type, data, channel)
+                # Check if this is a game completion message
+                is_complete = await process_server_message(msg_type, data, channel)
+                if is_complete:
+                    print("Game completion detected, signaling to stop tracking")
+                    return True  # Signal that tracking should stop
 
             else:
                 await process_filtered_message(data, channel)
@@ -318,6 +326,8 @@ class ApCog(commands.GroupCog, group_name="ap"):
         # Handle any other message types by showing the command type
         else:
             await process_unknown_message(cmd, msg, channel)
+
+        return False  # No completion detected
 
     @app_commands.command(
         name="track",
