@@ -167,12 +167,24 @@ def list_user_files_from_s3(bucket: str, discord_user_id: str) -> List[Dict]:
                 meta_data = json.loads(meta_result.stdout)
                 metadata = meta_data.get("Metadata", {})
 
+                # Log metadata for debugging
+                logger.debug(f"Metadata for {s3_key}: {metadata}")
+                logger.debug(f"Metadata keys: {list(metadata.keys())}")
+
+                # AWS CLI converts metadata keys - try different variations
+                game_type = (
+                    metadata.get("game_type") or
+                    metadata.get("gametype") or
+                    metadata.get("game-type") or
+                    "Unknown"
+                )
+
                 user_files.append({
                     "s3_key": s3_key,
                     "player_name": metadata.get("player_name", "Unknown"),
                     "game": metadata.get("game", "Unknown"),
-                    "game_type": metadata.get("game_type", "Unknown"),
-                    "upload_date": metadata.get("upload_date", "Unknown"),
+                    "game_type": game_type,
+                    "upload_date": metadata.get("upload_date") or metadata.get("uploaddate") or "Unknown",
                     "description": metadata.get("description", ""),
                     "uploaded": obj.get("LastModified", "Unknown"),
                     "size": obj.get("Size", 0)
