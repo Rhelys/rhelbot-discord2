@@ -246,6 +246,35 @@ def save_datapackage_locally(game_data: Dict[str, Any], connection_data: Dict[st
         logger.error(f"Error saving datapackage to {file_path}: {e}")
         return False
 
+def parse_yaml_metadata(filepath: str) -> tuple[Optional[str], Optional[str]]:
+    """
+    Extract player name and game from Archipelago YAML file.
+
+    Args:
+        filepath: Path to YAML file
+
+    Returns:
+        Tuple of (player_name, game_name), both may be None if not found
+    """
+    try:
+        from ruyaml import YAML
+
+        with open(filepath, "r", encoding="utf-8") as yaml_file:
+            yaml_object = YAML(typ="safe", pure=True)
+            raw_data = yaml_object.load_all(yaml_file)
+            data_list = list(raw_data)
+
+            for element in data_list:
+                player_name = element.get("name")
+                game_name = element.get("game")
+                if player_name:
+                    return player_name, game_name
+
+            return None, None
+    except Exception as e:
+        logger.error(f"Error parsing YAML metadata from {filepath}: {e}")
+        return None, None
+
 def load_local_datapackage(file_path: str = "datapackage.json") -> Optional[Dict[str, Any]]:
     """
     Load the Archipelago datapackage from a local JSON file.
