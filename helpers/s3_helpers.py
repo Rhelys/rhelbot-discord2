@@ -171,6 +171,7 @@ def list_user_files_from_s3(bucket: str, discord_user_id: str) -> List[Dict]:
                     "s3_key": s3_key,
                     "player_name": metadata.get("player_name", "Unknown"),
                     "game": metadata.get("game", "Unknown"),
+                    "game_type": metadata.get("game_type", "Unknown"),
                     "upload_date": metadata.get("upload_date", "Unknown"),
                     "description": metadata.get("description", ""),
                     "uploaded": obj.get("LastModified", "Unknown"),

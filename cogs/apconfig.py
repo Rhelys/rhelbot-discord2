@@ -5,6 +5,7 @@ import os
 import json
 import logging
 from datetime import datetime
+from typing import Literal
 
 # Import helper functions
 from helpers.s3_helpers import (
@@ -45,16 +46,18 @@ class ApConfigCog(commands.GroupCog, group_name="apconfig"):
     @app_commands.command(name="upload", description="Upload a player YAML configuration file")
     @app_commands.describe(
         playerfile="The YAML player configuration file",
+        game_type="Game type: async (asynchronous) or sync (synchronous)",
         description="Optional description for this configuration (e.g., 'Hard mode run', 'Randomizer settings v2')"
     )
     async def upload(
         self,
         interaction: discord.Interaction,
         playerfile: discord.Attachment,
+        game_type: Literal["async", "sync"],
         description: str = ""
     ) -> None:
         """Upload a player YAML file to S3 storage"""
-        logger.info(f"Upload command invoked by user {interaction.user.id} ({interaction.user.name})")
+        logger.info(f"Upload command invoked by user {interaction.user.id} ({interaction.user.name}) with game_type={game_type}")
         await interaction.response.defer()
 
         # Validate file extension
@@ -104,6 +107,7 @@ class ApConfigCog(commands.GroupCog, group_name="apconfig"):
             metadata = {
                 "player_name": player_name or "Unknown",
                 "game": game_name or "Unknown",
+                "game_type": game_type,
                 "discord_user": str(interaction.user.id),
                 "uploaded_by": interaction.user.name,
                 "upload_date": upload_date,
@@ -164,11 +168,16 @@ class ApConfigCog(commands.GroupCog, group_name="apconfig"):
         for idx, file_info in enumerate(user_files, start=1):
             player_name = file_info.get("player_name", "Unknown")
             game = file_info.get("game", "Unknown")
+            game_type = file_info.get("game_type", "Unknown")
             upload_date = file_info.get("upload_date", "Unknown")
             description = file_info.get("description", "")
 
-            # Build value with optional description
-            value_parts = [f"**Game:** {game}", f"**Uploaded:** {upload_date}"]
+            # Build value with game type and optional description
+            value_parts = [
+                f"**Game:** {game}",
+                f"**Type:** {game_type}",
+                f"**Uploaded:** {upload_date}"
+            ]
             if description:
                 value_parts.append(f"**Description:** {description}")
 
