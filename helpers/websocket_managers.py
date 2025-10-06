@@ -239,7 +239,22 @@ async def websocket_listener_main_loop(server_url: str, channel, password: Optio
 
                                 # Process all messages
                                 try:
-                                    await process_ap_message_func(msg, channel)
+                                    is_complete = await process_ap_message_func(msg, channel)
+
+                                    # Check if game completion was detected
+                                    if is_complete:
+                                        print(f"Game completion detected, stopping tracking for {server_url}")
+                                        await channel.send(f"✅ Game completed! Stopping tracking for {server_url}")
+
+                                        # Close websocket gracefully
+                                        if websocket:
+                                            await websocket.close()
+
+                                        # Remove from active connections
+                                        if server_url in active_connections:
+                                            del active_connections[server_url]
+
+                                        return  # Exit the listener
 
                                     # Update stability counter and potentially reset reconnect attempts
                                     reset_attempts = message_processor.update_stability_counter()

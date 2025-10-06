@@ -139,11 +139,22 @@ async def process_game_event_message(msg_type: str, data: list, channel):
 
 
 async def process_server_message(msg_type: str, data: list, channel):
-    """Process Tutorial, ServerChat message types"""
+    """Process Tutorial, ServerChat message types
+
+    Returns:
+        bool: True if this is a game completion message, False otherwise
+    """
     text = "".join([item.get("text", "") for item in data])
     if text:
-        # Skip join/leave info messages with comprehensive filtering
         text_lower = text.lower()
+
+        # Check for game completion message first (before filtering)
+        if "completed all of their games" in text_lower and "congratulations" in text_lower:
+            print(f"Game completion detected: {text}")
+            await channel.send(f"🎉 {text}")
+            return True  # Signal that game is complete
+
+        # Skip join/leave info messages with comprehensive filtering
         join_leave_keywords = [
             "has joined", "has left", "joined the game", "left the game",
             "tracking", "client(", "tags:", "connected", "disconnected",
@@ -154,9 +165,11 @@ async def process_server_message(msg_type: str, data: list, channel):
 
         if any(keyword in text_lower for keyword in join_leave_keywords):
             print(f"Skipping join/leave message: {text}")
-            return
+            return False
 
         await channel.send(f"ℹ️ {text}")
+
+    return False
 
 
 async def process_filtered_message(data: list, channel):
