@@ -707,45 +707,76 @@ class ApCog(commands.GroupCog, group_name="ap"):
             
             # Start the generation process in an interactive window so user can watch progress
             start_time = time.time()
-            
-            # Run the generation in a new interactive command window
+
+            # Create a marker file to track when generation starts
+            marker_file = f"{self.output_directory}/.generation_started"
+            with open(marker_file, 'w') as f:
+                f.write(str(time.time()))
+
+            # Run the generation in a new interactive command window with error detection
+            # Use a batch script wrapper to track completion
+            batch_script = f"{self.output_directory}/.run_generation.bat"
+            with open(batch_script, 'w') as f:
+                f.write('@echo off\n')
+                f.write('python "./Archipelago/Generate.py"\n')
+                f.write(f'echo %ERRORLEVEL% > "{self.output_directory}/.generation_exit_code"\n')
+                f.write('pause\n')
+
             process = subprocess.Popen([
-                "cmd", "/c", "start", "cmd", "/k", 
-                "python", "./Archipelago/Generate.py"
+                "cmd", "/c", "start", "cmd", "/k", batch_script
             ], shell=True)
-            
+
             print(f"Started generation process with PID: {process.pid}")
-            
+
             # Wait for generation to complete by monitoring for output files
             # Since the process launches in a separate window, we can't track it directly
             generation_timeout = 1200  # 20 minutes timeout
             check_interval = 10  # Check every 10 seconds
             elapsed_time = 0
-            
+
             await interaction.edit_original_response(
                 content="🔄 Generation running in interactive window... Monitoring for completion..."
             )
-            
+
             while elapsed_time < generation_timeout:
                 await sleep(check_interval)
                 elapsed_time += check_interval
-                
+
                 # Check if generation has produced output files
                 try:
                     output_files = listdir(self.output_directory)
                     zip_files = [f for f in output_files if f.endswith('.zip')]
-                    
+
                     if zip_files:
                         # Generation completed successfully
                         break
-                        
+
+                    # Check if the generation process exited with an error
+                    exit_code_file = f"{self.output_directory}/.generation_exit_code"
+                    if path.exists(exit_code_file):
+                        with open(exit_code_file, 'r') as f:
+                            exit_code = f.read().strip()
+                        if exit_code != '0':
+                            # Process failed
+                            await interaction.edit_original_response(
+                                content=f"❌ Generation failed with exit code {exit_code}. Check the generation window for error details."
+                            )
+                            # Clean up temp files
+                            try:
+                                remove(marker_file)
+                                remove(batch_script)
+                                remove(exit_code_file)
+                            except:
+                                pass
+                            return
+
                     # Update progress every 60 seconds
                     if elapsed_time % 60 == 0:
                         minutes = elapsed_time // 60
                         await interaction.edit_original_response(
                             content=f"🔄 Generation running in interactive window... ({minutes}m elapsed)"
                         )
-                        
+
                 except Exception as e:
                     print(f"Error checking output files: {e}")
                     continue
@@ -759,27 +790,47 @@ class ApCog(commands.GroupCog, group_name="ap"):
                 zip_files = []
             
             if not zip_files:
+                # Clean up temp files
+                try:
+                    remove(marker_file)
+                    remove(batch_script)
+                    exit_code_file = f"{self.output_directory}/.generation_exit_code"
+                    if path.exists(exit_code_file):
+                        remove(exit_code_file)
+                except:
+                    pass
+
                 if elapsed_time >= generation_timeout:
                     await interaction.edit_original_response(
-                        content="❌ Generation timed out after 5 minutes. Check the generation window for details."
+                        content="❌ Generation timed out after 20 minutes. Check the generation window for details."
                     )
                 else:
                     await interaction.edit_original_response(
                         content="❌ Generation failed - no output file was created. Check the generation window for details."
                     )
                 return
-            
+
+            # Clean up temp files after successful generation
+            try:
+                remove(marker_file)
+                remove(batch_script)
+                exit_code_file = f"{self.output_directory}/.generation_exit_code"
+                if path.exists(exit_code_file):
+                    remove(exit_code_file)
+            except Exception as cleanup_error:
+                print(f"Warning: Could not clean up temp files: {cleanup_error}")
+
             # Show final generation completion time
             final_time = time.time()
             total_elapsed = final_time - start_time
             total_minutes = int(total_elapsed // 60)
             total_seconds = int(total_elapsed % 60)
-            
+
             if total_minutes > 0:
                 final_time_str = f"{total_minutes}m {total_seconds}s"
             else:
                 final_time_str = f"{total_seconds}s"
-            
+
             await interaction.edit_original_response(
                 content=f"✅ Generation completed in {final_time_str}! Starting server..."
             )
