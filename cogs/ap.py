@@ -942,21 +942,53 @@ class ApCog(commands.GroupCog, group_name="ap"):
     # Todo - add in a "safe" cleanup option to remove everything but what's running
     # Todo - Disabling this for now and putting it into the startup function for ease of use.
     # I'll come back to this once I have a need to run multiple servers at once
-    """
     @app_commands.command(
         name="cleanup",
         description="Cleans up the output and player files from the last game",
     )
-    async def ap_cleanup(self, interaction: discord.Interaction):
+    @app_commands.describe(game_number="Specific game files to clean (1-3), or omit to clean all files")
+    async def ap_cleanup(self, interaction: discord.Interaction, game_number: Optional[int] = None):
+        # Validate game_number if provided
+        if game_number is not None and not 1 <= game_number <= 3:
+            await interaction.response.send_message(
+                f"❌ Invalid game number. Please choose between 1 and 3. You provided: {game_number}",
+                ephemeral=True
+            )
+            return
+
         def outputfiles():
             return listdir(self.output_directory)
 
-        for file in outputfiles():
-            remove(f"{self.output_directory}/{file}")
+        if game_number:
+            game_zip_name = f"game_{game_number}.zip"
+            files_removed = []
+            for file in outputfiles():
+                # Remove the specific game zip and any related files
+                if file == game_zip_name:
+                    remove(f"{self.output_directory}/{file}")
+                    files_removed.append(file)
 
-        await interaction.response.send_message("File cleanup complete", ephemeral=True)
+            if files_removed:
+                await interaction.response.send_message(
+                    f"✅ Cleaned up files for Game {game_number}: {', '.join(files_removed)}",
+                    ephemeral=True
+                )
+            else:
+                await interaction.response.send_message(
+                    f"ℹ️ No files found for Game {game_number}",
+                    ephemeral=True
+                )
+        else:
+            files_removed = []
+            for file in outputfiles():
+                remove(f"{self.output_directory}/{file}")
+                files_removed.append(file)
+
+            await interaction.response.send_message(
+                f"✅ File cleanup complete. Removed {len(files_removed)} files.",
+                ephemeral=True
+            )
         # Todo - Store player files somewhere with the date of the game and remove them for next generation
-    """
 
     def _get_output_files(self):
         """Helper method to get list of files in output directory"""
@@ -1216,33 +1248,65 @@ class ApCog(commands.GroupCog, group_name="ap"):
         name="stop",
         description="Stops the currently running Archipelago server and untracks all connections",
     )
-    async def ap_stop(self, interaction: discord.Interaction):
+    @app_commands.describe(game_number="Specific game to stop (1-3), or omit to stop all games")
+    async def ap_stop(self, interaction: discord.Interaction, game_number: Optional[int] = None):
+        # Validate game_number if provided
+        if game_number is not None and not 1 <= game_number <= 3:
+            await interaction.response.send_message(
+                f"❌ Invalid game number. Please choose between 1 and 3. You provided: {game_number}"
+            )
+            return
+
         await interaction.response.defer()
 
+        # Determine which games to stop
+        games_to_stop = [game_number] if game_number else [1, 2, 3]
+        target_ports = []
+
+        # Get the ports for games we want to stop
         try:
-            # First, untrack all active connections
+            for game_num in games_to_stop:
+                try:
+                    port = get_server_port(game_number=game_num)
+                    target_ports.append((game_num, port))
+                except Exception as e:
+                    print(f"Could not get port for game {game_num}: {e}")
+        except Exception as e:
+            print(f"Error getting ports: {e}")
+
+        try:
+            # First, untrack all active connections matching our target ports
             untracked_servers = []
             if self.active_connections:
                 for server_url in list(self.active_connections.keys()):
-                    connection = self.active_connections[server_url]
+                    # Check if this connection matches one of our target ports
+                    should_untrack = game_number is None  # Untrack all if no specific game
+                    if not should_untrack and target_ports:
+                        for game_num, port in target_ports:
+                            if f":{port}" in server_url:
+                                should_untrack = True
+                                break
 
-                    # Cancel the background task first
-                    connection["task"].cancel()
+                    if should_untrack:
+                        connection = self.active_connections[server_url]
 
-                    # Close the websocket if it exists
-                    if connection["websocket"]:
-                        try:
-                            await connection["websocket"].close()
-                        except Exception as e:
-                            print(f"Error closing websocket: {e}")
+                        # Cancel the background task first
+                        connection["task"].cancel()
 
-                    # Remove from tracking
-                    del self.active_connections[server_url]
-                    untracked_servers.append(server_url)
+                        # Close the websocket if it exists
+                        if connection["websocket"]:
+                            try:
+                                await connection["websocket"].close()
+                            except Exception as e:
+                                print(f"Error closing websocket: {e}")
+
+                        # Remove from tracking
+                        del self.active_connections[server_url]
+                        untracked_servers.append(server_url)
 
             untrack_message = f"\nUntracked servers: {', '.join(untracked_servers)}" if untracked_servers else ""
 
-            # Find and kill the MultiServer.py process
+            # Find and kill the MultiServer.py processes
             killed_processes = []
 
             for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
@@ -1251,25 +1315,40 @@ class ApCog(commands.GroupCog, group_name="ap"):
                     if (proc.info['name'] and 'python' in proc.info['name'].lower() and
                         proc.info['cmdline'] and any('MultiServer.py' in arg for arg in proc.info['cmdline'])):
 
-                        print(f"Found MultiServer process: PID {proc.info['pid']}, CMD: {' '.join(proc.info['cmdline'])}")
-                        proc.kill()
-                        killed_processes.append(proc.info['pid'])
+                        # If specific game(s), check if this process matches the port
+                        should_kill = game_number is None  # Kill all if no specific game
+                        if not should_kill and target_ports:
+                            cmdline_str = ' '.join(proc.info['cmdline'])
+                            for game_num, port in target_ports:
+                                if str(port) in cmdline_str:
+                                    should_kill = True
+                                    break
+
+                        if should_kill:
+                            print(f"Found MultiServer process: PID {proc.info['pid']}, CMD: {' '.join(proc.info['cmdline'])}")
+                            proc.kill()
+                            killed_processes.append(proc.info['pid'])
 
                 except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
                     pass
 
-            # Also try to terminate the tracked server process if it exists
-            if self.server_process:
-                try:
-                    # Kill the batch file process and its children
-                    parent = psutil.Process(self.server_process.pid)
-                    for child in parent.children(recursive=True):
-                        child.kill()
-                    parent.kill()
-                    killed_processes.append(self.server_process.pid)
-                    self.server_process = None
-                except (psutil.NoSuchProcess, psutil.AccessDenied):
-                    pass
+            # Also try to terminate tracked server processes
+            for game_num in games_to_stop:
+                if game_num in self.server_processes and self.server_processes[game_num]:
+                    try:
+                        # Kill the batch file process and its children
+                        parent = psutil.Process(self.server_processes[game_num].pid)
+                        for child in parent.children(recursive=True):
+                            child.kill()
+                        parent.kill()
+                        killed_processes.append(self.server_processes[game_num].pid)
+                        self.server_processes[game_num] = None
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+
+            # Clear legacy server_process if stopping all or it matches
+            if game_number is None or (self.server_process and self.server_process.pid in killed_processes):
+                self.server_process = None
 
             if killed_processes:
                 # Delete the local datapackage when server is stopped
@@ -1281,12 +1360,14 @@ class ApCog(commands.GroupCog, group_name="ap"):
                     datapackage_message = f"\nWarning: Failed to clean up datapackage: {str(dp_error)}"
                     logger.error(f"Error deleting datapackage on server stop: {dp_error}")
 
+                game_message = f"Game {game_number}" if game_number else "all games"
                 await interaction.followup.send(
-                    f"✅ Successfully stopped Archipelago server.\n"
+                    f"✅ Successfully stopped Archipelago server ({game_message}).\n"
                     f"Killed processes: {', '.join(map(str, killed_processes))}{datapackage_message}{untrack_message}"
                 )
             else:
-                await interaction.followup.send("❌ No running Archipelago server found.")
+                game_message = f"for Game {game_number}" if game_number else ""
+                await interaction.followup.send(f"❌ No running Archipelago server found {game_message}.")
 
         except ImportError:
             # Fallback method using taskkill on Windows
