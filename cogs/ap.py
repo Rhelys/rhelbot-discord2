@@ -8,7 +8,7 @@ import asyncio
 from asyncio import sleep
 import json
 import zipfile
-from typing import Optional, Dict
+from typing import Optional, Dict, Any
 from ruyaml import YAML
 import shutil
 from datetime import datetime
@@ -46,7 +46,13 @@ class ApCog(commands.GroupCog, group_name="ap"):
         self.game_data: Dict[str, Dict] = {}
         self.connection_data: Dict[str, Dict] = {}
         self.player_progress: Dict[int, set] = {}
+
+        # Multi-game server process tracking - key is game_number (1-3)
+        self.server_processes: Dict[int, Any] = {1: None, 2: None, 3: None}
+
+        # Legacy single server_process for backwards compatibility
         self.server_process = None
+
         self.player = ""
         self.game = ""
 
@@ -662,20 +668,42 @@ class ApCog(commands.GroupCog, group_name="ap"):
         description="Starts the game. Either generates or takes an optional "
         "pre-generated game file.",
     )
-    @app_commands.describe(apfile="Pre-generated zip file for an Archipelago game")
+    @app_commands.describe(
+        game_number="Game slot to use (1-3, default: 1)",
+        apfile="Pre-generated zip file for an Archipelago game"
+    )
     async def ap_newgame(
-        self, interaction: discord.Interaction, apfile: Optional[discord.Attachment]
+        self,
+        interaction: discord.Interaction,
+        game_number: int = 1,
+        apfile: Optional[discord.Attachment] = None
     ) -> None:
+        # Validate game_number
+        if not 1 <= game_number <= 3:
+            await interaction.response.send_message(
+                f"❌ Invalid game number. Please choose between 1 and 3. You provided: {game_number}"
+            )
+            return
+
         await interaction.response.send_message(
-            "Attempting to start Archipelago server, hold please...\nError messages will be sent to this channel"
+            f"Attempting to start Archipelago server for Game {game_number}, hold please...\nError messages will be sent to this channel"
         )
+
+        # Copy the appropriate game configuration to host.yaml
+        if not copy_game_config(game_number):
+            await interaction.edit_original_response(
+                content=f"❌ Failed to copy game configuration from game_settings/game_{game_number}.yaml"
+            )
+            return
+
+        game_zip_name = f"game_{game_number}.zip"
 
         def outputfiles():
             return listdir(self.output_directory)
 
         for file in outputfiles():
             remove(f"{self.output_directory}/{file}")
-            
+
         # Delete any existing datapackage to ensure clean start
         delete_local_datapackage()
         logger.info("Deleted local datapackage before server start")
@@ -683,7 +711,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
         # Todo - add error handling for submitted file to make sure it includes a .archipelago file
         if apfile:
             if apfile.filename.endswith(".zip"):
-                await apfile.save(f"{self.output_directory}/donkey.zip")
+                await apfile.save(f"{self.output_directory}/{game_zip_name}")
             else:
                 await interaction.edit_original_response(
                     content="File submitted was not a .zip file. Submit a valid "
@@ -715,11 +743,16 @@ class ApCog(commands.GroupCog, group_name="ap"):
 
             # Run the generation in a new interactive command window with error detection
             # Use a batch script wrapper to track completion
-            batch_script = f"{self.output_directory}/.run_generation.bat"
+            import os
+            current_dir = os.getcwd()
+            batch_script = os.path.abspath(f"{self.output_directory}/.run_generation.bat")
+            exit_code_file = os.path.abspath(f"{self.output_directory}/.generation_exit_code")
+
             with open(batch_script, 'w') as f:
                 f.write('@echo off\n')
-                f.write('python "./Archipelago/Generate.py"\n')
-                f.write(f'echo %ERRORLEVEL% > "{self.output_directory}/.generation_exit_code"\n')
+                f.write(f'cd /d "{current_dir}"\n')
+                f.write('python Archipelago\\Generate.py\n')
+                f.write(f'echo %%ERRORLEVEL%% > "{exit_code_file}"\n')
                 f.write('pause\n')
 
             process = subprocess.Popen([
@@ -837,21 +870,24 @@ class ApCog(commands.GroupCog, group_name="ap"):
 
         outputfile = listdir(self.output_directory)
 
-        # Todo - Refactor this to not be an absolute reference to the first object, just in case
+        # Rename the generated file to the appropriate game zip name
         rename(
             f"{self.output_directory}{outputfile[0]}",
-            f"{self.output_directory}/donkey.zip",
+            f"{self.output_directory}/{game_zip_name}",
         )
         
         # Start the server and track the process
-        self.server_process = subprocess.Popen([r"serverstart.bat"])
-        print(f"Started server process with PID: {self.server_process.pid}")
+        server_process = subprocess.Popen([r"serverstart.bat"])
+        self.server_processes[game_number] = server_process
+        self.server_process = server_process  # Keep legacy reference
+        print(f"Started Game {game_number} server process with PID: {server_process.pid}")
         await sleep(8)
 
         # Keep the server started message simple to avoid character limit issues
         try:
             server_password = get_server_password()
-            server_message = f"Archipelago server started.\nServer: ap.rhelys.com\nPort: 38281\nPassword: {server_password}"
+            server_port = get_server_port()
+            server_message = f"Archipelago server started.\nServer: ap.rhelys.com\nPort: {server_port}\nPassword: {server_password}"
             await interaction.edit_original_response(content=server_message)
             
             # After server is started, fetch and save the datapackage
@@ -861,7 +897,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
                 await asyncio.sleep(5)
                 
                 # Use await with the async function
-                success = await fetch_and_save_datapackage("ws://ap.rhelys.com:38281", server_password)
+                success = await fetch_and_save_datapackage(f"ws://ap.rhelys.com:{server_port}", server_password)
                 if success:
                     logger.info("Successfully saved datapackage after server start")
                 else:
@@ -872,11 +908,11 @@ class ApCog(commands.GroupCog, group_name="ap"):
         except Exception as e:
             await interaction.edit_original_response(
                 content=f"✅ Archipelago server started.\n❌ Server password error: {str(e)}\n"
-                        "Server: ap.rhelys.com\nPort: 38281"
+                        f"Server: ap.rhelys.com\nPort: {server_port}"
             )
 
         with zipfile.ZipFile(
-            f"{self.output_directory}/donkey.zip", mode="r"
+            f"{self.output_directory}/{game_zip_name}", mode="r"
         ) as gamefile:
             for file in gamefile.namelist():
                 if not file.endswith(tuple(self.system_extensions)):
@@ -886,8 +922,8 @@ class ApCog(commands.GroupCog, group_name="ap"):
         finaloutputlist = listdir(self.output_directory)
 
         for dirfile in finaloutputlist:
-            if dirfile == "donkey.zip":
-                print("Skipping output zip")
+            if dirfile == game_zip_name:
+                print(f"Skipping output zip for Game {game_number}")
             elif not dirfile.endswith(tuple(self.system_extensions)) and path.isfile(
                 f"{self.output_directory}/{dirfile}"
             ):
@@ -978,13 +1014,22 @@ class ApCog(commands.GroupCog, group_name="ap"):
     @app_commands.command(
         name="spoiler", description="Pulls the spoiler log from the current game"
     )
-    async def ap_spoiler(self, interaction: discord.Interaction):
+    @app_commands.describe(game_number="Game slot to get spoiler from (1-3, default: 1)")
+    async def ap_spoiler(self, interaction: discord.Interaction, game_number: int = 1):
+        # Validate game_number
+        if not 1 <= game_number <= 3:
+            await interaction.response.send_message(
+                f"❌ Invalid game number. Please choose between 1 and 3. You provided: {game_number}"
+            )
+            return
+
         await interaction.response.defer()
 
+        game_zip_name = f"game_{game_number}.zip"
         for file in self._get_output_files():
-            if file.endswith(".zip"):
+            if file.endswith(".zip") and file == game_zip_name:
                 with zipfile.ZipFile(
-                    f"{self.output_directory}/donkey.zip", mode="r"
+                    f"{self.output_directory}/{game_zip_name}", mode="r"
                 ) as gamefile:
                     for zipped_file in gamefile.namelist():
                         if zipped_file.endswith("Spoiler.txt"):
@@ -1003,62 +1048,84 @@ class ApCog(commands.GroupCog, group_name="ap"):
 
     @app_commands.command(
         name="status",
-        description="Gets the status and players of the current or pending game",
+        description="Gets the status and players of the current or pending game(s)",
     )
-    async def ap_status(self, interaction: discord.Interaction):
+    @app_commands.describe(game_number="Specific game to check (1-3), or omit to see all games")
+    async def ap_status(self, interaction: discord.Interaction, game_number: Optional[int] = None):
         await interaction.response.defer()
 
-        # Check if server is running
-        server_running = False
-        server_pid = None
-        
-        try:
-            
-            # Check for MultiServer.py processes
-            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
-                try:
-                    if (proc.info['name'] and 'python' in proc.info['name'].lower() and 
-                        proc.info['cmdline'] and any('MultiServer.py' in arg for arg in proc.info['cmdline'])):
-                        server_running = True
-                        server_pid = proc.info['pid']
-                        break
-                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                    pass
-                    
-        except ImportError:
-            # Fallback: check if tracked process is still running
-            if self.server_process:
-                try:
-                    # Check if process is still running
-                    if self.server_process.poll() is None:
-                        server_running = True
-                        server_pid = self.server_process.pid
-                except:
-                    pass
+        # Validate game_number if provided
+        if game_number is not None and not 1 <= game_number <= 3:
+            await interaction.followup.send(
+                f"❌ Invalid game number. Please choose between 1 and 3. You provided: {game_number}"
+            )
+            return
 
-        # Get current players
+        # Determine which games to check
+        games_to_check = [game_number] if game_number else [1, 2, 3]
+
+        status_parts = []
+        status_parts.append("📊 **Archipelago Server Status**\n")
+
+        for game_num in games_to_check:
+            # Check if game file exists
+            game_zip_path = f"{self.output_directory}/game_{game_num}.zip"
+            game_exists = path.exists(game_zip_path)
+
+            # Check if server is running for this game
+            server_running = False
+            server_pid = None
+            server_port = None
+
+            try:
+                # Get the port for this game
+                server_port = get_server_port(game_number=game_num)
+
+                # Check for MultiServer.py processes with this port
+                for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                    try:
+                        if (proc.info['name'] and 'python' in proc.info['name'].lower() and
+                            proc.info['cmdline'] and any('MultiServer.py' in arg for arg in proc.info['cmdline'])):
+                            # Check if this process is using the right port by checking cmdline
+                            if any(str(server_port) in arg for arg in proc.info['cmdline']):
+                                server_running = True
+                                server_pid = proc.info['pid']
+                                break
+                    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                        pass
+
+            except Exception as e:
+                # Fallback: check if tracked process is still running
+                if game_num in self.server_processes and self.server_processes[game_num]:
+                    try:
+                        if self.server_processes[game_num].poll() is None:
+                            server_running = True
+                            server_pid = self.server_processes[game_num].pid
+                    except:
+                        pass
+
+            # Build status for this game
+            status_parts.append(f"**Game {game_num}:**")
+
+            if not game_exists:
+                status_parts.append(f"  📭 No game file found")
+            elif server_running:
+                status_parts.append(f"  🟢 Running (PID: {server_pid})")
+                if server_port:
+                    status_parts.append(f"  📡 ap.rhelys.com:{server_port}")
+            else:
+                status_parts.append(f"  🔴 Not running (game file exists)")
+
+            status_parts.append("")  # Empty line between games
+
+        # Get current players (from game_status.json)
         try:
             current_players = self.list_players()
+            if current_players:
+                playerlist = list(current_players.keys())
+                status_parts.append(f"👥 **Players**: {', '.join(playerlist)}")
         except (AttributeError, FileNotFoundError):
-            current_players = {}
-
-        # Build status message
-        status_parts = []
-        
-        # Server status
-        if server_running:
-            status_parts.append(f"🟢 **Server Status**: Running (PID: {server_pid})")
-            status_parts.append("📡 **Connection**: ap.rhelys.com:38281")
-            status_parts.append("📡 **HTTPS Connection**: ap.rhelys.com:38288")
-        else:
-            status_parts.append("🔴 **Server Status**: Not running")
-        
-        # Player status
-        if current_players:
-            playerlist = list(current_players.keys())
-            status_parts.append(f"👥 **Current Players**: {', '.join(playerlist)}")
-        else:
-            status_parts.append("👥 **Current Players**: None")
+            pass
 
         await interaction.followup.send("\n".join(status_parts))
 
@@ -1241,13 +1308,30 @@ class ApCog(commands.GroupCog, group_name="ap"):
         name="restart",
         description="Restarts the Archipelago server using the existing game file (no generation)",
     )
-    async def ap_restart(self, interaction: discord.Interaction):
+    @app_commands.describe(game_number="Game slot to restart (1-3, default: 1)")
+    async def ap_restart(self, interaction: discord.Interaction, game_number: int = 1):
+        # Validate game_number
+        if not 1 <= game_number <= 3:
+            await interaction.response.send_message(
+                f"❌ Invalid game number. Please choose between 1 and 3. You provided: {game_number}"
+            )
+            return
+
         await interaction.response.defer()
-        
-        # Check if game file exists
-        if not path.exists(f"{self.output_directory}/donkey.zip"):
+
+        # Copy the appropriate game configuration to host.yaml
+        if not copy_game_config(game_number):
             await interaction.followup.send(
-                "❌ No game file found (donkey.zip). Use `/ap start` to generate and start a new game first."
+                f"❌ Failed to copy game configuration from game_settings/game_{game_number}.yaml"
+            )
+            return
+
+        game_zip_name = f"game_{game_number}.zip"
+
+        # Check if game file exists
+        if not path.exists(f"{self.output_directory}/{game_zip_name}"):
+            await interaction.followup.send(
+                f"❌ No game file found ({game_zip_name}). Use `/ap newgame {game_number}` to generate and start a new game first."
             )
             return
         
@@ -1288,7 +1372,7 @@ class ApCog(commands.GroupCog, group_name="ap"):
             if killed_processes:
                 print(f"Stopped processes: {killed_processes}")
                 await sleep(2)  # Give processes time to fully terminate
-                
+
         except ImportError:
             # Fallback method using taskkill on Windows
             try:
@@ -1298,26 +1382,29 @@ class ApCog(commands.GroupCog, group_name="ap"):
                 await sleep(2)
             except Exception as e:
                 print(f"Error stopping server: {e}")
-        
+
         # Start the server with existing game file
         try:
-            self.server_process = subprocess.Popen([r"serverstart.bat"])
-            print(f"Restarted server process with PID: {self.server_process.pid}")
+            server_process = subprocess.Popen([r"serverstart.bat"])
+            self.server_processes[game_number] = server_process
+            self.server_process = server_process  # Keep legacy reference
+            print(f"Restarted Game {game_number} server process with PID: {server_process.pid}")
             await sleep(8)  # Give server time to start
-            
+
             try:
-                server_password = get_server_password()
-                restart_message = "✅ Archipelago server restarted successfully!\n" \
-                                 f"Server: ap.rhelys.com\nPort: 38281\nPassword: {server_password}"
-                
+                server_password = get_server_password(game_number=game_number)
+                server_port = get_server_port(game_number=game_number)
+                restart_message = f"✅ Archipelago server for Game {game_number} restarted successfully!\n" \
+                                 f"Server: ap.rhelys.com\nPort: {server_port}\nPassword: {server_password}"
+
                 # After server is restarted, fetch and save a fresh datapackage
                 try:
-                            
+
                     # Give the server a moment to fully initialize
                     await asyncio.sleep(5)
-                    
+
                     # Use await with the async function
-                    success = await fetch_and_save_datapackage("ws://ap.rhelys.com:38281", server_password)
+                    success = await fetch_and_save_datapackage(f"ws://ap.rhelys.com:{server_port}", server_password)
                     if success:
                         logger.info("Successfully saved datapackage after server restart")
                     else:
@@ -1344,8 +1431,11 @@ class ApCog(commands.GroupCog, group_name="ap"):
         name="progress",
         description="Shows location check progress for all players in the current game. Use 'me' for your own progress.",
     )
-    @app_commands.describe(player="Optional: Show progress for a specific player or use 'me' for your own progress")
-    async def ap_progress(self, interaction: discord.Interaction, player: Optional[str] = None):
+    @app_commands.describe(
+        player="Optional: Show progress for a specific player or use 'me' for your own progress",
+        game_number="Game slot to check progress (1-3, default: 1)"
+    )
+    async def ap_progress(self, interaction: discord.Interaction, player: Optional[str] = None, game_number: int = 1):
         await interaction.response.defer()
 
         # Check if server is running first

@@ -99,45 +99,53 @@ def get_player_total_locations(player_id: int, save_data: dict, output_directory
         logger.error(f"Error getting total locations for player {player_id}: {e}")
         return 0
 
-def find_archipelago_file(output_directory: str = "./Archipelago/output/") -> Optional[Path]:
-    """Find the .archipelago file in the output directory or extract it from donkey.zip"""
+def find_archipelago_file(output_directory: str = "./Archipelago/output/", game_number: int = 1) -> Optional[Path]:
+    """Find the .archipelago file in the output directory or extract it from game zip file.
+
+    Args:
+        output_directory: Directory to search for game files
+        game_number: Game number (1-3) to find the archipelago file for
+
+    Returns:
+        Path to the .archipelago file, or None if not found
+    """
     output_path = Path(output_directory)
-    
+
     # First check if .archipelago file already exists in output directory
     archipelago_files = list(output_path.glob("*.archipelago"))
     if archipelago_files:
         # Return the most recent .archipelago file
         return max(archipelago_files, key=lambda f: f.stat().st_mtime)
-    
-    # If not found, try to extract it from donkey.zip
-    donkey_zip_path = output_path / "donkey.zip"
-    if donkey_zip_path.exists():
+
+    # If not found, try to extract it from game_X.zip
+    game_zip_path = output_path / f"game_{game_number}.zip"
+    if game_zip_path.exists():
         try:
-            logger.debug(f"Looking for .archipelago file in {donkey_zip_path}")
-            with zipfile.ZipFile(donkey_zip_path, 'r') as zip_file:
+            logger.debug(f"Looking for .archipelago file in {game_zip_path}")
+            with zipfile.ZipFile(game_zip_path, 'r') as zip_file:
                 # Look for .archipelago files in the zip
                 archipelago_files_in_zip = [f for f in zip_file.namelist() if f.endswith('.archipelago')]
-                
+
                 if archipelago_files_in_zip:
                     archipelago_file_in_zip = archipelago_files_in_zip[0]
-                    logger.debug(f"Found {archipelago_file_in_zip} in donkey.zip")
-                    
+                    logger.debug(f"Found {archipelago_file_in_zip} in {game_zip_path.name}")
+
                     # Extract it to the output directory
                     extracted_path = output_path / Path(archipelago_file_in_zip).name
                     with zip_file.open(archipelago_file_in_zip) as source:
                         with open(extracted_path, 'wb') as target:
                             target.write(source.read())
-                    
+
                     logger.debug(f"Extracted .archipelago file to {extracted_path}")
                     return extracted_path
                 else:
-                    logger.debug("No .archipelago file found in donkey.zip")
-                    
+                    logger.debug(f"No .archipelago file found in {game_zip_path.name}")
+
         except Exception as e:
-            logger.debug(f"Error extracting .archipelago file from donkey.zip: {e}")
+            logger.debug(f"Error extracting .archipelago file from {game_zip_path.name}: {e}")
     else:
-        logger.debug("donkey.zip not found")
-    
+        logger.debug(f"{game_zip_path.name} not found")
+
     return None
 
 def get_locations_from_archipelago_file(archipelago_file: Path, player_id: int) -> int:

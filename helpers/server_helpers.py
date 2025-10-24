@@ -8,6 +8,7 @@ import json
 import logging
 import subprocess
 import uuid
+import shutil
 from typing import Dict, Any, Optional, Tuple
 from ruyaml import YAML
 
@@ -19,9 +20,45 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-def get_server_password(host_file: str = "./Archipelago/host.yaml") -> str:
-    """Read the server password from Archipelago host.yaml configuration file."""
+def copy_game_config(game_number: int, target_file: str = "./Archipelago/host.yaml") -> bool:
+    """Copy game-specific configuration file to Archipelago host.yaml.
+
+    Args:
+        game_number: Game number (1-3) to copy configuration from
+        target_file: Destination file path (default: ./Archipelago/host.yaml)
+
+    Returns:
+        True if successful, False otherwise
+    """
     try:
+        if not 1 <= game_number <= 3:
+            raise ValueError(f"game_number must be between 1 and 3, got {game_number}")
+
+        source_file = f"./game_settings/game_{game_number}.yaml"
+        shutil.copy(source_file, target_file)
+        logger.info(f"Copied {source_file} to {target_file}")
+        return True
+    except Exception as e:
+        logger.error(f"Error copying game config: {e}")
+        return False
+
+def get_server_password(host_file: str = "./Archipelago/host.yaml", game_number: int = None) -> str:
+    """Read the server password from Archipelago host.yaml configuration file.
+
+    Args:
+        host_file: Path to the host.yaml file (default: ./Archipelago/host.yaml)
+        game_number: Game number (1-3) to read from game_settings directory (optional)
+
+    Returns:
+        Server password as string, or empty string if no password set
+    """
+    try:
+        # If game_number is provided, read from game_settings directory
+        if game_number is not None:
+            if not 1 <= game_number <= 3:
+                raise ValueError(f"game_number must be between 1 and 3, got {game_number}")
+            host_file = f"./game_settings/game_{game_number}.yaml"
+
         yaml = YAML()
 
         with open(host_file, "r", encoding="utf-8") as f:
@@ -34,6 +71,40 @@ def get_server_password(host_file: str = "./Archipelago/host.yaml") -> str:
             return ""
 
         return str(password)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"{host_file} file not found")
+    except Exception as e:
+        raise Exception(f"Error reading {host_file}: {e}")
+
+def get_server_port(host_file: str = "./Archipelago/host.yaml", game_number: int = None) -> int:
+    """Read the server port from Archipelago host.yaml configuration file.
+
+    Args:
+        host_file: Path to the host.yaml file (default: ./Archipelago/host.yaml)
+        game_number: Game number (1-3) to read from game_settings directory (optional)
+
+    Returns:
+        Server port as integer
+    """
+    try:
+        # If game_number is provided, read from game_settings directory
+        if game_number is not None:
+            if not 1 <= game_number <= 3:
+                raise ValueError(f"game_number must be between 1 and 3, got {game_number}")
+            host_file = f"./game_settings/game_{game_number}.yaml"
+
+        yaml = YAML()
+
+        with open(host_file, "r", encoding="utf-8") as f:
+            config = yaml.load(f)
+
+        port = config.get("server_options", {}).get("port")
+
+        # If port is not specified, use default port 38281
+        if port is None:
+            return 38281
+
+        return int(port)
     except FileNotFoundError:
         raise FileNotFoundError(f"{host_file} file not found")
     except Exception as e:
