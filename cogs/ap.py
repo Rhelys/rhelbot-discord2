@@ -102,14 +102,15 @@ class ApCog(commands.GroupCog, group_name="ap"):
         for server_url in self.active_connections:
             print(f"  - {server_url} (task still running)")
 
-    def resolve_player_name(self, discord_user_id: int, player_input: str):
+    def resolve_player_name(self, discord_user_id: int, player_input: str, game_number: int = 1):
         """
         Resolve 'me' or a Discord user mention to the registered player name(s), or return the input as-is.
-        
+
         Args:
             discord_user_id: The Discord ID of the user making the request
             player_input: The player name input, which could be 'me' or a Discord mention
-        
+            game_number: Which game (1-3) to look up players in
+
         Returns:
             - A player name string if a single match is found
             - A list of player names if multiple matches are found
@@ -121,14 +122,14 @@ class ApCog(commands.GroupCog, group_name="ap"):
             status_file = "game_status.json"
             if not path.exists(status_file):
                 return None
-                
+
             try:
-                with open(status_file, 'r') as f:
-                    game_status = json.load(f)
-                
-                # Get the list of player names for this Discord user
+                # Load game-specific status
+                game_status = load_game_status(status_file, game_number=game_number)
+
+                # Get the list of player names for this Discord user in this game
                 player_names = game_status.get("discord_users", {}).get(str(discord_user_id), [])
-                
+
                 if not player_names:
                     return None
                 elif len(player_names) == 1:
@@ -144,18 +145,18 @@ class ApCog(commands.GroupCog, group_name="ap"):
         mention_match = re.match(r'<@!?(\d+)>', player_input)
         if mention_match:
             mentioned_user_id = mention_match.group(1)
-            
+
             status_file = "game_status.json"
             if not path.exists(status_file):
                 return None
-                
+
             try:
-                with open(status_file, 'r') as f:
-                    game_status = json.load(f)
-                
-                # Get the list of player names for the mentioned Discord user
+                # Load game-specific status
+                game_status = load_game_status(status_file, game_number=game_number)
+
+                # Get the list of player names for the mentioned Discord user in this game
                 player_names = game_status.get("discord_users", {}).get(mentioned_user_id, [])
-                
+
                 if not player_names:
                     return None
                 elif len(player_names) == 1:
@@ -198,23 +199,38 @@ class ApCog(commands.GroupCog, group_name="ap"):
                 ),
             )
 
-    def list_players(self):
+    def list_players(self, game_number: int = None):
         """
         Get a dictionary of current players and their games.
-        
+
+        Args:
+            game_number: Specific game (1-3) to list players for, or None for all games
+
         Returns:
             dict: Dictionary mapping player names to their game names
         """
-        
+
         current_players = {}
-        game_status = load_game_status("game_status.json")
-        
-        # Extract players from the game status
-        players_data = game_status.get("players", {})
-        for player_name, player_info in players_data.items():
-            game = player_info.get("game", "Unknown")
-            current_players[player_name] = game
-            
+
+        if game_number is not None:
+            # Get players for specific game
+            game_status = load_game_status("game_status.json", game_number=game_number)
+            players_data = game_status.get("players", {})
+            for player_name, player_info in players_data.items():
+                game = player_info.get("game", "Unknown")
+                current_players[player_name] = game
+        else:
+            # Get players from all games
+            full_status = load_game_status("game_status.json")
+            for game_key in ["game_1", "game_2", "game_3"]:
+                game_status = full_status.get(game_key, {})
+                players_data = game_status.get("players", {})
+                for player_name, player_info in players_data.items():
+                    game = player_info.get("game", "Unknown")
+                    # Add game number to differentiate same player names across games
+                    display_name = f"{player_name} (Game {game_key[-1]})"
+                    current_players[display_name] = game
+
         return current_players
 
     async def websocket_listener(self, server_url: str, channel_id: int, password: str = None):

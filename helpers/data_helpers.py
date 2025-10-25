@@ -16,30 +16,95 @@ from collections import namedtuple
 
 logger = logging.getLogger(__name__)
 
-def load_game_status(status_file: str = "game_status.json") -> Dict[str, Any]:
-    """Load game status from JSON file."""
+def load_game_status(status_file: str = "game_status.json", game_number: int = None) -> Dict[str, Any]:
+    """Load game status from JSON file.
+
+    Args:
+        status_file: Path to the game status JSON file
+        game_number: Specific game (1-3) to load, or None for all games
+
+    Returns:
+        Game status dict. If game_number specified, returns that game's status.
+        Otherwise returns full multi-game structure.
+    """
     if os.path.exists(status_file):
         try:
             with open(status_file, 'r') as f:
                 game_status = json.load(f)
                 logger.debug(f"Loaded game status from {status_file}")
+
+                # Check if this is the old format (no game separation)
+                if "players" in game_status and "discord_users" in game_status:
+                    # Old format - migrate to new format under game_1
+                    logger.info("Migrating old game_status format to multi-game format")
+                    old_data = game_status.copy()
+                    game_status = {
+                        "game_1": old_data,
+                        "game_2": {"players": {}, "discord_users": {}},
+                        "game_3": {"players": {}, "discord_users": {}}
+                    }
+                    # Save the migrated format
+                    save_game_status(game_status, status_file)
+
+                # Return specific game if requested
+                if game_number is not None:
+                    game_key = f"game_{game_number}"
+                    return game_status.get(game_key, {"players": {}, "discord_users": {}})
+
                 return game_status
         except (json.JSONDecodeError, IOError) as e:
             logger.error(f"Error loading game status from {status_file}: {e}")
-            return {"players": {}, "discord_users": {}}
+            return _get_empty_game_status(game_number)
     else:
         logger.debug(f"Game status file {status_file} not found, returning empty dict")
-        return {"players": {}, "discord_users": {}}
+        return _get_empty_game_status(game_number)
 
-def save_game_status(game_status: Dict[str, Any], status_file: str = "game_status.json") -> bool:
-    """Save game status to JSON file."""
+def _get_empty_game_status(game_number: int = None) -> Dict[str, Any]:
+    """Get empty game status structure."""
+    if game_number is not None:
+        return {"players": {}, "discord_users": {}}
+    return {
+        "game_1": {"players": {}, "discord_users": {}},
+        "game_2": {"players": {}, "discord_users": {}},
+        "game_3": {"players": {}, "discord_users": {}}
+    }
+
+def save_game_status(game_status: Dict[str, Any], status_file: str = "game_status.json", game_number: int = None) -> bool:
+    """Save game status to JSON file.
+
+    Args:
+        game_status: Game status dict to save
+        status_file: Path to the game status JSON file
+        game_number: If provided, saves only this game's status (merges with existing)
+
+    Returns:
+        True if successful, False otherwise
+    """
     try:
-        # Ensure required keys exist
-        if "players" not in game_status:
-            game_status["players"] = {}
-        if "discord_users" not in game_status:
-            game_status["discord_users"] = {}
-        
+        # If saving specific game, load full status first and update
+        if game_number is not None:
+            full_status = load_game_status(status_file, game_number=None)
+            game_key = f"game_{game_number}"
+
+            # Ensure the game_status for this specific game has required keys
+            if "players" not in game_status:
+                game_status["players"] = {}
+            if "discord_users" not in game_status:
+                game_status["discord_users"] = {}
+
+            full_status[game_key] = game_status
+            game_status = full_status
+        else:
+            # Ensure all game entries have required structure
+            for game_key in ["game_1", "game_2", "game_3"]:
+                if game_key not in game_status:
+                    game_status[game_key] = {"players": {}, "discord_users": {}}
+                else:
+                    if "players" not in game_status[game_key]:
+                        game_status[game_key]["players"] = {}
+                    if "discord_users" not in game_status[game_key]:
+                        game_status[game_key]["discord_users"] = {}
+
         with open(status_file, 'w') as f:
             json.dump(game_status, f, indent=2)
             logger.debug(f"Saved game status to {status_file}")
