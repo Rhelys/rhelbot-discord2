@@ -1777,24 +1777,32 @@ class ApCog(commands.GroupCog, group_name="ap"):
     )
     @app_commands.describe(
         player="Optional: Show hints only for a specific player and their hint points/cost",
-        exclude_found="Optional: Exclude hints for items that have already been found (default: True)"
+        exclude_found="Optional: Exclude hints for items that have already been found (default: True)",
+        game_number="Game slot to check hints (1-3, default: 1)"
     )
-    async def ap_hints(self, interaction: discord.Interaction, player: Optional[str] = None, exclude_found: bool = True):
+    async def ap_hints(self, interaction: discord.Interaction, player: Optional[str] = None, exclude_found: bool = True, game_number: int = 1):
+        # Validate game_number
+        if not 1 <= game_number <= 3:
+            await interaction.response.send_message(
+                f"❌ Invalid game number. Please choose between 1 and 3. You provided: {game_number}"
+            )
+            return
+
         await interaction.response.defer()
-        
+
         # Check if server is running first
         server_running = is_server_running()
-        
+
         if not server_running:
             await interaction.followup.send("❌ Archipelago server is not running. Use `/ap start` to start the server first.")
             return
-        
+
         # Resolve player reference if provided
         original_player = None
         target_players = None
         if player:
             original_player = player
-            resolved_player = self.resolve_player_name(interaction.user.id, player)
+            resolved_player = self.resolve_player_name(interaction.user.id, player, game_number=game_number)
             if resolved_player is None and player.lower() == "me":
                 await interaction.followup.send("❌ You haven't joined the game yet. Use `/ap join` first.")
                 return
@@ -2254,13 +2262,21 @@ class ApCog(commands.GroupCog, group_name="ap"):
     )
     @app_commands.describe(
         player_name="The player name to connect as",
-        item_name="The item to get a hint for"
+        item_name="The item to get a hint for",
+        game_number="Game slot to request hint (1-3, default: 1)"
     )
-    async def ap_gethint(self, interaction: discord.Interaction, player_name: str, item_name: str):
+    async def ap_gethint(self, interaction: discord.Interaction, player_name: str, item_name: str, game_number: int = 1):
+        # Validate game_number
+        if not 1 <= game_number <= 3:
+            await interaction.response.send_message(
+                f"❌ Invalid game number. Please choose between 1 and 3. You provided: {game_number}"
+            )
+            return
+
         await interaction.response.defer()
-        
+
         # Resolve "me" to actual player name
-        resolved_name = self.resolve_player_name(interaction.user.id, player_name)
+        resolved_name = self.resolve_player_name(interaction.user.id, player_name, game_number=game_number)
         if resolved_name is None and player_name.lower() == "me":
             await interaction.followup.send("❌ You haven't joined the game yet. Use `/ap join` first.")
             return
@@ -2503,24 +2519,32 @@ class ApCog(commands.GroupCog, group_name="ap"):
         name="shame",
         description="Identify players who haven't checked locations in over 72 hours"
     )
-    async def ap_shame(self, interaction: discord.Interaction):
+    @app_commands.describe(game_number="Game slot to check activity (1-3, default: 1)")
+    async def ap_shame(self, interaction: discord.Interaction, game_number: int = 1):
+        # Validate game_number
+        if not 1 <= game_number <= 3:
+            await interaction.response.send_message(
+                f"❌ Invalid game number. Please choose between 1 and 3. You provided: {game_number}"
+            )
+            return
+
         await interaction.response.defer()
-        
+
         # Check if server is running first
         server_running = self.is_server_running()
-        
+
         if not server_running:
             await interaction.followup.send("❌ Archipelago server is not running. Use `/ap start` to start the server first.")
             return
-            
+
         # Load save data
         save_data = load_apsave_data(self.output_directory, self.ap_directory)
         if not save_data:
             await interaction.followup.send("❌ Could not load save data. Make sure the Archipelago server has a save file.")
             return
-        
-        # Load game status to map players to Discord users
-        game_status = load_game_status()
+
+        # Load game status to map players to Discord users for this specific game
+        game_status = load_game_status("game_status.json", game_number=game_number)
         discord_users = game_status.get("discord_users", {})
         
         # Get player and game data
