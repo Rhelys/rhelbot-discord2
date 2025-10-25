@@ -1181,12 +1181,22 @@ class ApCog(commands.GroupCog, group_name="ap"):
         name="leave",
         description="Deletes player's file from the staged files. Use 'me' to remove yourself.",
     )
-    @app_commands.describe(player="Removes yaml file for selected player from the game or use 'me' to remove yourself")
-    async def ap_leave(self, interaction: discord.Interaction, player: str):
+    @app_commands.describe(
+        player="Removes yaml file for selected player from the game or use 'me' to remove yourself",
+        game_number="Game slot to leave (1-3, default: 1)"
+    )
+    async def ap_leave(self, interaction: discord.Interaction, player: str, game_number: int = 1):
+        # Validate game_number
+        if not 1 <= game_number <= 3:
+            await interaction.response.send_message(
+                f"❌ Invalid game number. Please choose between 1 and 3. You provided: {game_number}"
+            )
+            return
+
         await interaction.response.defer()
 
         # Resolve "me" to actual player name
-        resolved_name = self.resolve_player_name(interaction.user.id, player)
+        resolved_name = self.resolve_player_name(interaction.user.id, player, game_number=game_number)
         if resolved_name is None and player.lower() == "me":
             await interaction.followup.send("You haven't joined the game yet.")
             return
