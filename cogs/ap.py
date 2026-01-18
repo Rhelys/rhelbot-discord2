@@ -715,11 +715,15 @@ class ApCog(commands.GroupCog, group_name="ap"):
 
             # Run the generation in a new interactive command window with error detection
             # Use a batch script wrapper to track completion
-            batch_script = f"{self.output_directory}/.run_generation.bat"
+            current_dir = os.getcwd()
+            batch_script = os.path.abspath(f"{self.output_directory}/.run_generation.bat")
+            exit_code_file = os.path.abspath(f"{self.output_directory}/.generation_exit_code")
+
             with open(batch_script, 'w') as f:
                 f.write('@echo off\n')
-                f.write('python "./Archipelago/Generate.py"\n')
-                f.write(f'echo %ERRORLEVEL% > "{self.output_directory}/.generation_exit_code"\n')
+                f.write(f'cd /d "{current_dir}"\n')
+                f.write('python Archipelago\\Generate.py\n')
+                f.write(f'echo %%ERRORLEVEL%% > "{exit_code_file}"\n')
                 f.write('pause\n')
 
             process = subprocess.Popen([

@@ -5,6 +5,7 @@ Lookup and name resolution helper functions for Archipelago Discord bot.
 import logging
 import os
 from typing import Dict, Any, Optional
+from helpers.data_helpers import get_from_datapackage
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +43,6 @@ def lookup_item_name(game: str, item_id: int, game_data: Dict[str, Any] = None,
     local_data_used = False
     if not game_data and os.path.exists(file_path):
         try:
-            from helpers.data_helpers import get_from_datapackage
             local_game_data = get_from_datapackage("game_data", file_path)
             if local_game_data:
                 logger.debug("Using local datapackage for item lookup")
@@ -112,7 +112,6 @@ def lookup_location_name(game: str, location_id: int, game_data: Dict[str, Any] 
     local_data_used = False
     if not game_data and os.path.exists(file_path):
         try:
-            from helpers.data_helpers import get_from_datapackage
             local_game_data = get_from_datapackage("game_data", file_path)
             if local_game_data:
                 logger.debug("Using local datapackage for location lookup")
@@ -182,7 +181,6 @@ def lookup_player_info(player_id: int, info_key: str, default_value: str,
     local_data_used = False
     if not connection_data and os.path.exists(file_path):
         try:
-            from helpers.data_helpers import get_from_datapackage
             local_connection_data = get_from_datapackage("connection_data", file_path)
             if local_connection_data:
                 logger.debug(f"Using local datapackage for player lookup (key: {info_key})")

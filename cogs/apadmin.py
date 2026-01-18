@@ -3,6 +3,7 @@ from discord import app_commands
 from discord.ext import commands
 import asyncio
 import websockets
+from websockets.protocol import State
 import json
 import logging
 from typing import Optional, Dict, Any
@@ -11,7 +12,7 @@ import uuid
 from ruyaml import YAML
 
 # Import helper functions from the ap.py cog
-from helpers.server_helpers import get_server_password, is_server_running, connect_to_server
+from helpers.server_helpers import get_server_password, is_server_running, connect_to_server, get_server_port
 from helpers.lookup_helpers import lookup_item_name, lookup_player_name
 
 donkeyServer = discord.Object(id=591625815528177690)
@@ -228,9 +229,24 @@ class ApAdminCog(commands.GroupCog, group_name="apadmin"):
         
         # Check if we have an active admin session
         session = self.admin_sessions.get(server_url)
-        if session and session.get('websocket') and not session['websocket'].closed:
-            print(f"Reusing existing admin session from {session.get('logged_in_at')}")
-            return session
+        if session and session.get('websocket'):
+            # Check if websocket is still open
+            ws = session['websocket']
+            try:
+                # For websockets library, check if connection is open
+                if hasattr(ws, 'closed'):
+                    is_closed = ws.closed
+                elif hasattr(ws, 'state'):
+                    is_closed = ws.state != State.OPEN
+                else:
+                    # Fallback: assume closed if we can't check
+                    is_closed = True
+
+                if not is_closed:
+                    print(f"Reusing existing admin session from {session.get('logged_in_at')}")
+                    return session
+            except:
+                pass  # Session is invalid, will be cleaned up below
         
         # Clean up any invalid sessions
         if session:
@@ -374,13 +390,25 @@ class ApAdminCog(commands.GroupCog, group_name="apadmin"):
         try:
             websocket = session['websocket']
             print(f"Using websocket: {websocket}")
-            
+
             # Check if websocket is still connected
-            if websocket.closed:
-                print("Websocket is closed, admin session expired")
-                if server_url in self.admin_sessions:
-                    del self.admin_sessions[server_url]
-                return None
+            try:
+                if hasattr(websocket, 'closed'):
+                    is_closed = websocket.closed
+                elif hasattr(websocket, 'state'):
+                    is_closed = websocket.state != State.OPEN
+                else:
+                    # If we can't determine state, try to proceed
+                    is_closed = False
+
+                if is_closed:
+                    print("Websocket is closed, admin session expired")
+                    if server_url in self.admin_sessions:
+                        del self.admin_sessions[server_url]
+                    return None
+            except Exception as e:
+                print(f"Error checking websocket state: {e}")
+                # If we can't check, assume it's still open and let the send fail if needed
             
             # Send the command as JSON message (in array format like ap.py)
             command_message = {
@@ -487,25 +515,39 @@ class ApAdminCog(commands.GroupCog, group_name="apadmin"):
         name="release",
         description="Send out the remaining items from a player to their intended recipients"
     )
-    @app_commands.describe(player_name="The player whose remaining items should be released")
-    async def admin_release(self, interaction: discord.Interaction, player_name: str):
+    @app_commands.describe(
+        player_name="The player whose remaining items should be released",
+        game_number="Game slot to execute command on (1-3, default: 1)"
+    )
+    async def admin_release(self, interaction: discord.Interaction, player_name: str, game_number: int = 1):
+        # Validate game_number
+        if not 1 <= game_number <= 3:
+            await interaction.response.send_message(
+                f"❌ Invalid game number. Please choose between 1 and 3. You provided: {game_number}"
+            )
+            return
+
         await interaction.response.defer()
-        
+
         # Check if user is authorized
         if not self.is_authorized_user(interaction.user.id):
             await interaction.followup.send("❌ You are not authorized to use admin commands.")
             return
-        
+
         # Check if server is running
         if not is_server_running():
             await interaction.followup.send("❌ Archipelago server is not running.")
             return
-        
+
         try:
+            # Get server URL for the specific game
+            server_port = get_server_port(game_number=game_number)
+            server_url = f"ws://ap.rhelys.com:{server_port}"
+
             # Send the release command
             command = f"!admin /release {player_name}"
-            print(f"Executing admin release command: {command}")
-            response = await self.send_admin_command(command)
+            print(f"Executing admin release command on Game {game_number}: {command}")
+            response = await self.send_admin_command(command, server_url=server_url)
             print(f"Admin release response: {response}")
             
             if response is None:
@@ -527,26 +569,38 @@ class ApAdminCog(commands.GroupCog, group_name="apadmin"):
     )
     @app_commands.describe(
         player_name="The player who should receive the item",
-        item_name="The name of the item to send"
+        item_name="The name of the item to send",
+        game_number="Game slot to execute command on (1-3, default: 1)"
     )
-    async def admin_send(self, interaction: discord.Interaction, player_name: str, item_name: str):
+    async def admin_send(self, interaction: discord.Interaction, player_name: str, item_name: str, game_number: int = 1):
+        # Validate game_number
+        if not 1 <= game_number <= 3:
+            await interaction.response.send_message(
+                f"❌ Invalid game number. Please choose between 1 and 3. You provided: {game_number}"
+            )
+            return
+
         await interaction.response.defer()
-        
+
         # Check if user is authorized
         if not self.is_authorized_user(interaction.user.id):
             await interaction.followup.send("❌ You are not authorized to use admin commands.")
             return
-        
+
         # Check if server is running
         if not is_server_running():
             await interaction.followup.send("❌ Archipelago server is not running.")
             return
-        
+
         try:
+            # Get server URL for the specific game
+            server_port = get_server_port(game_number=game_number)
+            server_url = f"ws://ap.rhelys.com:{server_port}"
+
             # Send the item command
             command = f"!admin /send {player_name} {item_name}"
-            print(f"Executing admin send command: {command}")
-            response = await self.send_admin_command(command)
+            print(f"Executing admin send command on Game {game_number}: {command}")
+            response = await self.send_admin_command(command, server_url=server_url)
             print(f"Admin send response: {response}")
             
             if response is None:
@@ -747,14 +801,27 @@ class ApAdminCog(commands.GroupCog, group_name="apadmin"):
         else:
             for server_url, session in self.admin_sessions.items():
                 websocket = session.get('websocket')
-                if websocket and not websocket.closed:
-                    logged_in_at = session.get('logged_in_at', 'Unknown')
-                    last_used = session.get('last_used', 'Unknown')
-                    status_lines.append(f"✅ **{server_url}**")
-                    status_lines.append(f"   └ Logged in: {logged_in_at}")
-                    status_lines.append(f"   └ Last used: {last_used}")
+                if websocket:
+                    try:
+                        if hasattr(websocket, 'closed'):
+                            is_closed = websocket.closed
+                        elif hasattr(websocket, 'state'):
+                            is_closed = websocket.state != State.OPEN
+                        else:
+                            is_closed = False
+
+                        if not is_closed:
+                            logged_in_at = session.get('logged_in_at', 'Unknown')
+                            last_used = session.get('last_used', 'Unknown')
+                            status_lines.append(f"✅ **{server_url}**")
+                            status_lines.append(f"   └ Logged in: {logged_in_at}")
+                            status_lines.append(f"   └ Last used: {last_used}")
+                        else:
+                            status_lines.append(f"❌ **{server_url}** (Connection closed)")
+                    except:
+                        status_lines.append(f"❌ **{server_url}** (Connection closed)")
                 else:
-                    status_lines.append(f"❌ **{server_url}** (Connection closed)")
+                    status_lines.append(f"❌ **{server_url}** (No websocket)")
 
         # Check server running status
         server_running = is_server_running()
@@ -779,10 +846,19 @@ class ApAdminCog(commands.GroupCog, group_name="apadmin"):
         
         for server_url, session in list(self.admin_sessions.items()):
             websocket = session.get('websocket')
-            if websocket and not websocket.closed:
+            if websocket:
                 try:
-                    await websocket.close()
-                    disconnected_count += 1
+                    # Check if websocket is open before attempting to close
+                    if hasattr(websocket, 'closed'):
+                        is_closed = websocket.closed
+                    elif hasattr(websocket, 'state'):
+                        is_closed = websocket.state != State.OPEN
+                    else:
+                        is_closed = False
+
+                    if not is_closed:
+                        await websocket.close()
+                        disconnected_count += 1
                 except:
                     pass
             del self.admin_sessions[server_url]

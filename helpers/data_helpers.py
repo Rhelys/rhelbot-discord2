@@ -13,6 +13,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Any, Optional, Tuple, List
 from collections import namedtuple
+from ruyaml import YAML
 
 logger = logging.getLogger(__name__)
 
@@ -257,8 +258,6 @@ def parse_yaml_metadata(filepath: str) -> tuple[Optional[str], Optional[str]]:
         Tuple of (player_name, game_name), both may be None if not found
     """
     try:
-        from ruyaml import YAML
-
         with open(filepath, "r", encoding="utf-8") as yaml_file:
             yaml_object = YAML(typ="safe", pure=True)
             raw_data = yaml_object.load_all(yaml_file)
